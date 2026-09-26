@@ -1,0 +1,700 @@
+package com.littletaro.vesna.overlay
+
+import android.app.Activity
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.res.Configuration
+import android.graphics.PixelFormat
+import android.graphics.Point
+import android.hardware.display.DisplayManager
+import android.hardware.display.VirtualDisplay
+import android.media.ImageReader
+import android.media.projection.MediaProjection
+import android.media.projection.MediaProjectionManager
+import android.os.Build
+import android.os.Handler
+import android.os.IBinder
+import android.os.Looper
+import android.os.Parcelable
+import android.provider.Settings
+import android.util.DisplayMetrics
+import android.view.Gravity
+import android.view.View
+import android.view.WindowManager
+import android.widget.Toast
+import com.littletaro.vesna.MainActivity
+import com.littletaro.vesna.R
+import com.littletaro.vesna.a11y.BackgroundAccessibilityService
+import com.littletaro.vesna.a11y.SendToBackgroundOutcome
+import com.littletaro.vesna.core.ForegroundAppTracker
+import com.littletaro.vesna.core.OperationLog
+import com.littletaro.vesna.core.OverlayConfig
+import com.littletaro.vesna.core.OverlayPrefs
+import java.util.concurrent.CopyOnWriteArraySet
+import kotlin.math.roundToInt
+
+/**
+ * 常驻前台服务：负责把悬浮按钮挂到游戏画面之上，并把点击转成一次「切到后台」。
+ *
+ * 生命周期与用户手动开关绑定（[com.littletaro.vesna.core.OverlayPrefs] 的 enabled 字段）：
+ * 服务不在任何情况下自行开启；系统回收后用 START_STICKY 拉起时会重新读配置决定去留。
+ *
+ * 关于「仅在指定应用显示」：该模式用 1.5 秒一次的轻量轮询判断前台应用。
+ * 轮询本身不读取任何内容，只问系统「最近进入前台的是哪个包名」。
+ *
+ * 关于「原神体力条自动切后台」：需要用户在游戏优化页授权 MediaProjection 后，
+ * 服务会创建 [ImageReader] + [VirtualDisplay]，每 500ms 截一帧并分析屏幕底部中央
+ * 的绿色像素比例；低于阈值时调用 [onButtonTriggered] 自动切后台。
+ */
+class OverlayService : Service() {
+
+    private lateinit var windowManager: WindowManager
+    private val handler = Handler(Looper.getMainLooper())
+
+    private var buttonView: ToggleButtonView? = null
+    private var config = OverlayConfig()
+
+    private var dragStartX = 0
+    private var dragStartY = 0
+
+    private var pollingForeground = false
+    private var lastForegroundPackage: String? = null
+
+    /** 自动返回游戏的倒计时任务。null 表示当前没有在等返回。 */
+    private var autoReturnRunnable: Runnable? = null
+    private var autoReturnCountdownRunnable: Runnable? = null
+    private var autoReturnPackage: String? = null
+
+    // ---------------- MediaProjection 截屏（体力条识别）
+    private var mediaProjection: MediaProjection? = null
+    private var virtualDisplay: VirtualDisplay? = null
+    private var imageReader: ImageReader? = null
+    private var staminaConsecutiveLowFrames = 0
+
+    private val foregroundPoll = object : Runnable {
+        override fun run() {
+            refreshVisibilityByForeground()
+            if (pollingForeground) handler.postDelayed(this, POLL_INTERVAL_MS)
+        }
+    }
+
+    private val staminaAnalyzer = Runnable { analyzeStaminaFrame() }
+
+    override fun onCreate() {
+        super.onCreate()
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        createNotificationChannel()
+        OperationLog.record(this, "悬浮服务已创建")
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        userStopRequested = false
+        config = OverlayPrefs.load(this)
+
+        val overlayGranted = runCatching { Settings.canDrawOverlays(this) }
+            .onFailure { OperationLog.record(this, "悬浮窗权限检查异常", it.javaClass.simpleName) }
+            .getOrDefault(false)
+        if (!overlayGranted) {
+            OperationLog.record(this, "启动中止：缺少悬浮窗权限")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
+        // MediaProjection 的用户授权会随 Intent 带过来。Android 14+ 要求先以
+        // mediaProjection 类型进入前台，再调用 getMediaProjection()。
+        val projectionIntent = intent
+            ?.getParcelableExtraCompat<Intent>(EXTRA_MEDIA_PROJECTION_DATA)
+            ?.takeIf { config.staminaAutoSwitchEnabled }
+
+        return try {
+            startAsForeground(includeMediaProjection = projectionIntent != null || mediaProjection != null)
+            projectionIntent?.let(::createMediaProjection)
+            attachButton()
+            restartForegroundPolling()
+            OperationLog.record(
+                this,
+                "悬浮服务已启动",
+                "尺寸=${config.sizeDp}dp 不透明度=${config.alphaPercent}%",
+            )
+            // 到这里按钮才真的挂到屏幕上 —— 界面此刻才该显示「运行中」。
+            // 注意 instance 不能更早赋值，否则启动失败时界面会短暂显示成已开启。
+            instance = this
+            notifyRunningChanged(this)
+            START_STICKY
+        } catch (error: Exception) {
+            OperationLog.record(this, "悬浮按钮创建失败，服务退出", error.javaClass.simpleName)
+            removeButton()
+            stopSelf()
+            START_NOT_STICKY
+        }
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        val view = buttonView ?: return
+        val params = view.layoutParams as? WindowManager.LayoutParams ?: return
+        // 记录方向变化前的绝对像素位置，重建按钮后恢复，避免游戏↔最近任务时按钮跳位。
+        val previousX = params.x
+        val previousY = params.y
+        OperationLog.record(this, "屏幕配置变化，重建悬浮按钮")
+        config = OverlayPrefs.load(this)
+        attachButton()
+        // attachButton 会按当前方向比例落点；这里把位置恢复成变化前的绝对坐标，防止跳变。
+        buttonView?.let { newView ->
+            val newParams = newView.layoutParams as? WindowManager.LayoutParams ?: return@let
+            val screen = screenSize()
+            newParams.x = previousX.coerceIn(0, (screen.x - newParams.width).coerceAtLeast(0))
+            newParams.y = previousY.coerceIn(0, (screen.y - newParams.height).coerceAtLeast(0))
+            runCatching { windowManager.updateViewLayout(newView, newParams) }
+                .onFailure { OperationLog.record(this, "恢复按钮位置失败", it.javaClass.simpleName) }
+        }
+    }
+
+    override fun onDestroy() {
+        cancelAutoReturn()
+        stopForegroundPolling()
+        removeButton()
+        releaseMediaProjection()
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        if (instance === this) {
+            instance = null
+            notifyRunningChanged(this)
+        }
+        OperationLog.record(
+            this,
+            if (userStopRequested) "悬浮服务已停止（用户操作）" else "悬浮服务已销毁（系统回收或异常）",
+        )
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    // ---------------------------------------------------------------- 窗口
+
+    private fun attachButton() {
+        removeButton()
+        val view = ToggleButtonView(
+            context = this,
+            onTrigger = { onButtonTriggered() },
+            onDragStart = { onDragStarted() },
+            onDrag = { dx, dy -> onDragged(dx, dy) },
+            onDragEnd = { onDragFinished() },
+        )
+        view.alpha = config.alpha
+        windowManager.addView(view, createLayoutParams())
+        buttonView = view
+        applyGeometry()
+        refreshVisibilityByForeground()
+    }
+
+    private fun createLayoutParams(): WindowManager.LayoutParams {
+        val size = dp(config.sizeDp)
+        return WindowManager.LayoutParams(
+            size,
+            size,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_SPLIT_TOUCH or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            title = "Vesna 悬浮按钮"
+        }
+    }
+
+    /** 按当前配置重算尺寸与落点。拖动结束、屏幕旋转、设置页保存后都会调用。 */
+    private fun applyGeometry() {
+        val view = buttonView ?: return
+        val params = view.layoutParams as? WindowManager.LayoutParams ?: return
+        val screen = screenSize()
+
+        val size = dp(config.sizeDp)
+        params.width = size
+        params.height = size
+
+        val maxX = (screen.x - size).coerceAtLeast(0)
+        val maxY = (screen.y - size).coerceAtLeast(0)
+        params.x = (config.xRatio * screen.x - size / 2f).roundToInt().coerceIn(0, maxX)
+        params.y = (config.yRatio * screen.y - size / 2f).roundToInt().coerceIn(0, maxY)
+
+        view.alpha = config.alpha
+        runCatching { windowManager.updateViewLayout(view, params) }
+            .onFailure { OperationLog.record(this, "更新悬浮按钮布局失败", it.javaClass.simpleName) }
+    }
+
+    private fun removeButton() {
+        buttonView?.let { view ->
+            runCatching { windowManager.removeView(view) }
+                .onFailure { /* 已被系统移除，忽略 */ }
+        }
+        buttonView = null
+    }
+
+    // ---------------------------------------------------------------- 交互
+
+    private fun onButtonTriggered() {
+        // 切出去之前先记住当前游戏，用于自动拉回来。
+        val targetPackage = ForegroundAppTracker.currentForegroundPackage(this)
+
+        when (BackgroundAccessibilityService.sendCurrentAppToBackground()) {
+            SendToBackgroundOutcome.SUCCESS -> {
+                OperationLog.record(this, "已把当前应用切到后台")
+                if (config.autoReturnEnabled) {
+                    scheduleAutoReturn(targetPackage, config.autoReturnDelayMs)
+                }
+            }
+
+            SendToBackgroundOutcome.NOT_CONNECTED -> {
+                OperationLog.record(this, "切换失败：无障碍服务未连接")
+                notifyUser("无障碍服务未连接，请回到 Vesna 重新开启")
+            }
+
+            SendToBackgroundOutcome.REJECTED -> {
+                OperationLog.record(this, "切换失败：系统拒绝了本次动作")
+                notifyUser("系统没有响应切后台动作，可稍后再试")
+            }
+        }
+    }
+
+    /**
+     * 切到后台成功后，按配置延迟把刚才的应用拉回前台。
+     *
+     * 这里依赖 UsageStats 在切走前最后一次记录到的前台包名。如果用户手速极快、
+     * 切走前没有可用事件，就放弃自动返回，避免把错误应用拉起来。
+     */
+    private fun scheduleAutoReturn(targetPackage: String?, delayMs: Long) {
+        cancelAutoReturn()
+        if (targetPackage.isNullOrBlank()) {
+            OperationLog.record(this, "未记录到当前应用包名，跳过自动返回")
+            return
+        }
+        if (targetPackage == packageName) {
+            OperationLog.record(this, "当前应用是 Vesna 自身，跳过自动返回")
+            return
+        }
+
+        autoReturnPackage = targetPackage
+        val totalSeconds = (delayMs / 1_000L).toInt().coerceAtLeast(1)
+
+        // 启动倒计时显示：每秒刷新一次悬浮按钮上的数字。
+        startCountdownDisplay(totalSeconds)
+
+        val runnable = Runnable {
+            autoReturnRunnable = null
+            autoReturnPackage = null
+            cancelCountdownDisplay()
+            bringAppToForeground(targetPackage)
+        }
+        autoReturnRunnable = runnable
+        handler.postDelayed(runnable, delayMs)
+        OperationLog.record(this, "已安排 ${delayMs / 1000L} 秒后自动返回", targetPackage)
+    }
+
+    private fun startCountdownDisplay(totalSeconds: Int) {
+        cancelCountdownDisplay()
+        val runnable = object : Runnable {
+            var remaining = totalSeconds
+            override fun run() {
+                buttonView?.countdownSeconds = remaining
+                if (remaining > 0) {
+                    remaining--
+                    handler.postDelayed(this, 1_000L)
+                } else {
+                    autoReturnCountdownRunnable = null
+                }
+            }
+        }
+        autoReturnCountdownRunnable = runnable
+        handler.post(runnable)
+    }
+
+    private fun cancelCountdownDisplay() {
+        autoReturnCountdownRunnable?.let { handler.removeCallbacks(it) }
+        autoReturnCountdownRunnable = null
+        buttonView?.countdownSeconds = -1
+    }
+
+    private fun cancelAutoReturn() {
+        autoReturnRunnable?.let { handler.removeCallbacks(it) }
+        autoReturnRunnable = null
+        autoReturnPackage = null
+        cancelCountdownDisplay()
+    }
+
+    private fun bringAppToForeground(packageName: String) {
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+        if (launchIntent == null) {
+            OperationLog.record(this, "自动返回失败：找不到启动入口", packageName)
+            return
+        }
+        runCatching {
+            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            startActivity(launchIntent)
+            OperationLog.record(this, "已自动返回游戏", packageName)
+        }.onFailure {
+            OperationLog.record(this, "自动返回失败", it.javaClass.simpleName)
+        }
+    }
+
+    private fun onDragStarted() {
+        val params = buttonView?.layoutParams as? WindowManager.LayoutParams ?: return
+        dragStartX = params.x
+        dragStartY = params.y
+    }
+
+    private fun onDragged(deltaX: Float, deltaY: Float) {
+        val view = buttonView ?: return
+        val params = view.layoutParams as? WindowManager.LayoutParams ?: return
+        val screen = screenSize()
+        params.x = (dragStartX + deltaX).roundToInt()
+            .coerceIn(0, (screen.x - params.width).coerceAtLeast(0))
+        params.y = (dragStartY + deltaY).roundToInt()
+            .coerceIn(0, (screen.y - params.height).coerceAtLeast(0))
+        runCatching { windowManager.updateViewLayout(view, params) }
+            .onFailure { /* 拖动途中窗口被系统移除，忽略 */ }
+    }
+
+    private fun onDragFinished() {
+        val params = buttonView?.layoutParams as? WindowManager.LayoutParams ?: return
+        val screen = screenSize()
+        val centerX = params.x + params.width / 2f
+        val centerY = params.y + params.height / 2f
+        config = config.copy(
+            xRatio = (centerX / screen.x).coerceIn(0f, 1f),
+            yRatio = (centerY / screen.y).coerceIn(0f, 1f),
+        )
+        OverlayPrefs.save(this, config)
+        OperationLog.record(
+            this,
+            "悬浮按钮位置已保存",
+            "x=${(config.xRatio * 100).roundToInt()}% y=${(config.yRatio * 100).roundToInt()}%",
+        )
+    }
+
+    private fun notifyUser(message: String) {
+        // 已持有悬浮窗权限的应用允许从后台弹提示，这里失败也无所谓。
+        runCatching { Toast.makeText(this, message, Toast.LENGTH_SHORT).show() }
+    }
+
+    // ---------------------------------------------------------------- 可见性
+
+    private fun restartForegroundPolling() {
+        stopForegroundPolling()
+        if (!config.restrictToApps || config.targetPackages.isEmpty()) return
+        pollingForeground = true
+        lastForegroundPackage = null
+        OperationLog.record(this, "开始按前台应用控制显示", "目标应用=${config.targetPackages.size} 个")
+        handler.post(foregroundPoll)
+    }
+
+    private fun stopForegroundPolling() {
+        pollingForeground = false
+        lastForegroundPackage = null
+        handler.removeCallbacks(foregroundPoll)
+    }
+
+    private fun refreshVisibilityByForeground() {
+        val view = buttonView ?: return
+        if (!config.restrictToApps || config.targetPackages.isEmpty()) {
+            view.visibility = View.VISIBLE
+            return
+        }
+        val foreground = ForegroundAppTracker.currentForegroundPackage(this)
+        if (foreground == lastForegroundPackage) return
+        lastForegroundPackage = foreground
+        val shouldShow = foreground != null && config.targetPackages.contains(foreground)
+        view.visibility = if (shouldShow) View.VISIBLE else View.GONE
+    }
+
+    // ---------------------------------------------------------------- 体力条识别（MediaProjection）
+
+    private fun createMediaProjection(data: Intent) {
+        releaseMediaProjection()
+        val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        mediaProjection = manager.getMediaProjection(Activity.RESULT_OK, data)
+        if (mediaProjection == null) {
+            OperationLog.record(this, "MediaProjection 获取失败")
+            return
+        }
+
+        val metrics = resources.displayMetrics
+        val width = metrics.widthPixels
+        val height = metrics.heightPixels
+        val density = metrics.densityDpi
+
+        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        val surface = imageReader?.surface ?: return
+
+        virtualDisplay = mediaProjection?.createVirtualDisplay(
+            "VesnaStamina",
+            width, height, density,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            surface, null, handler,
+        )
+
+        OperationLog.record(this, "MediaProjection 已启动，开始体力条检测")
+        staminaConsecutiveLowFrames = 0
+        handler.removeCallbacks(staminaAnalyzer)
+        handler.post(staminaAnalyzer)
+    }
+
+    private fun releaseMediaProjection() {
+        handler.removeCallbacks(staminaAnalyzer)
+        virtualDisplay?.release()
+        virtualDisplay = null
+        imageReader?.close()
+        imageReader = null
+        mediaProjection?.stop()
+        mediaProjection = null
+        staminaConsecutiveLowFrames = 0
+    }
+
+    private fun analyzeStaminaFrame() {
+        if (!config.staminaAutoSwitchEnabled || imageReader == null) {
+            staminaConsecutiveLowFrames = 0
+            return
+        }
+
+        // 如果用户限制了「仅在指定应用显示」，则只在那些应用里运行识别，避免误触。
+        val foreground = ForegroundAppTracker.currentForegroundPackage(this)
+        if (config.restrictToApps && config.targetPackages.isNotEmpty() &&
+            (foreground == null || !config.targetPackages.contains(foreground))
+        ) {
+            scheduleNextStaminaAnalysis()
+            return
+        }
+
+        val reader = imageReader ?: return
+        val image = runCatching { reader.acquireLatestImage() }.getOrNull()
+        if (image == null) {
+            // 首帧尚未就绪时继续轮询，避免实验性识别永久停止。
+            scheduleNextStaminaAnalysis()
+            return
+        }
+        val width = image.width
+        val height = image.height
+
+        val roiLeft = (width * 0.35f).roundToInt().coerceIn(0, width)
+        val roiTop = (height * 0.87f).roundToInt().coerceIn(0, height)
+        val roiRight = (width * 0.65f).roundToInt().coerceIn(roiLeft, width)
+        val roiBottom = (height * 0.93f).roundToInt().coerceIn(roiTop, height)
+
+        var greenCount = 0
+        var total = 0
+
+        val planes = image.planes
+        val buffer = planes[0].buffer
+        val pixelStride = planes[0].pixelStride
+        val rowStride = planes[0].rowStride
+
+        for (y in roiTop until roiBottom) {
+            val rowStart = y * rowStride + roiLeft * pixelStride
+            if (rowStart < 0 || rowStart >= buffer.capacity()) continue
+            buffer.position(rowStart)
+            for (x in roiLeft until roiRight) {
+                if (buffer.remaining() < 4) break
+                val r = buffer.get().toInt() and 0xFF
+                val g = buffer.get().toInt() and 0xFF
+                val b = buffer.get().toInt() and 0xFF
+                buffer.get() // alpha
+                if (g > 120 && g > r + 20 && g > b + 20) greenCount++
+                total++
+            }
+        }
+        image.close()
+
+        val percent = if (total > 0) greenCount * 100 / total else 0
+        val threshold = config.staminaThresholdPercent.coerceIn(5, 80)
+
+        if (percent < threshold) {
+            staminaConsecutiveLowFrames++
+            if (staminaConsecutiveLowFrames >= config.staminaConfirmFrames.coerceAtLeast(1)) {
+                OperationLog.record(
+                    this,
+                    "体力条耗尽（绿色$percent% < 阈值$threshold%），自动切后台",
+                    foreground ?: "",
+                )
+                staminaConsecutiveLowFrames = 0
+                onButtonTriggered()
+            } else {
+                OperationLog.record(
+                    this,
+                    "体力条偏低（绿色$percent% < 阈值$threshold%），累计 $staminaConsecutiveLowFrames 帧",
+                )
+            }
+        } else {
+            staminaConsecutiveLowFrames = 0
+        }
+
+        scheduleNextStaminaAnalysis()
+    }
+
+    private fun scheduleNextStaminaAnalysis() {
+        if (config.staminaAutoSwitchEnabled && imageReader != null) {
+            handler.postDelayed(staminaAnalyzer, STAMINA_POLL_INTERVAL_MS)
+        }
+    }
+
+    // ---------------------------------------------------------------- 前台服务
+
+    private fun startAsForeground(includeMediaProjection: Boolean = false) {
+        val notification = Notification.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("Vesna 悬浮按钮运行中")
+            .setContentText("点一下把当前游戏切到后台")
+            .setOngoing(true)
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .setContentIntent(
+                PendingIntent.getActivity(
+                    this,
+                    0,
+                    Intent(this, MainActivity::class.java),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+                ),
+            )
+            .build()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            val foregroundTypes =
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE or
+                    if (includeMediaProjection) {
+                        android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                    } else {
+                        0
+                    }
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                foregroundTypes,
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun createNotificationChannel() {
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            getString(R.string.overlay_channel_name),
+            NotificationManager.IMPORTANCE_LOW,
+        ).apply {
+            description = "保持悬浮按钮在游戏画面上常驻"
+            setShowBadge(false)
+        }
+        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+    }
+
+    // ---------------------------------------------------------------- 工具
+
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).roundToInt()
+
+    @Suppress("DEPRECATION")
+    private fun screenSize(): Point {
+        val fallback = Point(
+            resources.displayMetrics.widthPixels,
+            resources.displayMetrics.heightPixels,
+        )
+        return try {
+            val point = Point()
+            val display = windowManager.defaultDisplay ?: return fallback
+            display.getRealSize(point)
+            if (point.x <= 0 || point.y <= 0) fallback else point
+        } catch (_: Exception) {
+            fallback
+        }
+    }
+
+    companion object {
+        private const val CHANNEL_ID = "vesna_overlay"
+        private const val NOTIFICATION_ID = 4101
+        private const val POLL_INTERVAL_MS = 1_500L
+        private const val STAMINA_POLL_INTERVAL_MS = 500L
+        private const val EXTRA_MEDIA_PROJECTION_DATA = "media_projection_data"
+
+        @Volatile
+        private var instance: OverlayService? = null
+
+        @Volatile
+        private var userStopRequested: Boolean = false
+
+        fun markUserStop() {
+            userStopRequested = true
+        }
+
+        /** 悬浮按钮此刻是否真的挂在屏幕上。 */
+        fun isRunning(): Boolean = instance != null
+
+        /**
+         * 存活状态订阅者。服务挂起按钮、以及销毁时都会回调一次。
+         *
+         * 存在的理由：startForegroundService 是异步的 —— 点下开关的那一刻服务还没创建完，
+         * 界面直接去问 isRunning() 只会得到「未开启」，得等用户切走再回来才刷新。
+         * 让服务自己回报状态，界面才能做到点完即变。
+         */
+        private val runningObservers = CopyOnWriteArraySet<() -> Unit>()
+
+        fun addRunningObserver(observer: () -> Unit) {
+            runningObservers.add(observer)
+        }
+
+        fun removeRunningObserver(observer: () -> Unit) {
+            runningObservers.remove(observer)
+        }
+
+        private fun notifyRunningChanged(context: Context) {
+            runningObservers.forEach { observer ->
+                runCatching { observer() }
+                    .onFailure {
+                        OperationLog.record(context, "界面刷新回调异常", it.javaClass.simpleName)
+                    }
+            }
+        }
+
+        /**
+         * 设置页保存后调用：让运行中的服务立刻换用新配置（尺寸、透明度、可见范围）。
+         * 服务未运行或动作无效时静默返回。
+         */
+        @JvmStatic
+        fun reloadConfig() {
+            val service = instance ?: return
+            service.handler.post {
+                val hadStamina = service.config.staminaAutoSwitchEnabled
+                service.config = OverlayPrefs.load(service)
+                service.applyGeometry()
+                service.restartForegroundPolling()
+                service.refreshVisibilityByForeground()
+                // 用户关闭体力条自动切后台时，立刻释放 MediaProjection。
+                if (hadStamina && !service.config.staminaAutoSwitchEnabled) {
+                    service.releaseMediaProjection()
+                    OperationLog.record(service, "已关闭体力条自动切后台，释放 MediaProjection")
+                }
+            }
+        }
+
+        /**
+         * 用户授权 MediaProjection 后，把授权 Intent 传给运行中的服务。
+         * 服务未运行时会先被拉起。
+         */
+        @JvmStatic
+        fun requestMediaProjection(context: Context, data: Intent) {
+            val intent = Intent(context, OverlayService::class.java).apply {
+                putExtra(EXTRA_MEDIA_PROJECTION_DATA, data)
+            }
+            context.startForegroundService(intent)
+        }
+
+        private inline fun <reified T : Parcelable> Intent.getParcelableExtraCompat(name: String): T? =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                getParcelableExtra(name, T::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                getParcelableExtra(name) as? T
+            }
+    }
+}

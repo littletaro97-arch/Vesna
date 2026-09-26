@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  通知栏小图标：必须单色（系统只取透明度，再套自己的着色）。
+  改成和桌面图标一致的三张层叠线框卡片，间距按 24dp 画布重排 ——
+  直接把 108dp 那份等比缩下来会糊成一团。
+  走 evenOdd 填充：同向子路径相减即得线框，不需要 stroke。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- 后层 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M7,2.5 L12.5,2.5 A2,2 0 0 1 14.5,4.5 L14.5,7.5 A2,2 0 0 1 12.5,9.5 L7,9.5 A2,2 0 0 1 5,7.5 L5,4.5 A2,2 0 0 1 7,2.5 Z M7,3.7 L12.5,3.7 A0.8,0.8 0 0 1 13.3,4.5 L13.3,7.5 A0.8,0.8 0 0 1 12.5,8.3 L7,8.3 A0.8,0.8 0 0 1 6.2,7.5 L6.2,4.5 A0.8,0.8 0 0 1 7,3.7 Z" />
+    <!-- 中层 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M9.5,5.5 L15,5.5 A2,2 0 0 1 17,7.5 L17,10.5 A2,2 0 0 1 15,12.5 L9.5,12.5 A2,2 0 0 1 7.5,10.5 L7.5,7.5 A2,2 0 0 1 9.5,5.5 Z M9.5,6.7 L15,6.7 A0.8,0.8 0 0 1 15.8,7.5 L15.8,10.5 A0.8,0.8 0 0 1 15,11.3 L9.5,11.3 A0.8,0.8 0 0 1 8.7,10.5 L8.7,7.5 A0.8,0.8 0 0 1 9.5,6.7 Z" />
+    <!-- 前层 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M12,8.5 L17.5,8.5 A2,2 0 0 1 19.5,10.5 L19.5,13.5 A2,2 0 0 1 17.5,15.5 L12,15.5 A2,2 0 0 1 10,13.5 L10,10.5 A2,2 0 0 1 12,8.5 Z M12,9.7 L17.5,9.7 A0.8,0.8 0 0 1 18.3,10.5 L18.3,13.5 A0.8,0.8 0 0 1 17.5,14.3 L12,14.3 A0.8,0.8 0 0 1 11.2,13.5 L11.2,10.5 A0.8,0.8 0 0 1 12,9.7 Z" />
+</vector>

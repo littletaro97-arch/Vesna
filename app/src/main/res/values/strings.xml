@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Vesna, keep flying</string>
+    <string name="overlay_channel_name">Vesna 悬浮按钮</string>
+    <string name="accessibility_service_description">把你正在玩的游戏一键切到后台。
+
+开启后，Vesna 只在你点击悬浮按钮时执行一次「回到最近任务」的系统操作。它不读取屏幕内容，不监听、不记录、不转发你的任何触摸或按键操作。</string>
+</resources>

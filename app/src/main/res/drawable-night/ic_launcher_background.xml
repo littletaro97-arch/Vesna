@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  深色模式图标的底色：系统切到深色时替换 白底。
+  配色取界面配色里的夜间背景 #16181D，和 App 内部观感一致。
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#16181D"
+        android:pathData="M0,0h108v108h-108z" />
+</vector>

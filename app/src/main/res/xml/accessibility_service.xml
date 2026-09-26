@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  最保守声明：只注册一个事件类型（服务被系统启用/断开时的心跳），
+  显式关闭「读取窗口内容」，不申请任何手势能力。
+  Vesna 的全部工作只是 performGlobalAction(GLOBAL_ACTION_RECENTS) 一次系统级动作。
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:canPerformGestures="false"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="200" />

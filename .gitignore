@@ -1,0 +1,31 @@
+# Local machine / IDE files
+local.properties
+*.iml
+.idea/
+.vscode/
+.DS_Store
+
+# Gradle / build outputs
+.gradle/
+build/
+*/build/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Logs
+*.log
+
+# APK / release artifacts
+*.apk
+*.aab
+
+# Signing / secrets
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+*.dpapi
+keystore.properties
