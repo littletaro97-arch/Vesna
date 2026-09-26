@@ -79,6 +79,22 @@ fun Context.actionButton(text: String, primary: Boolean): Button = Button(this).
     setPadding(dp(12), 0, dp(12), 0)
 }
 
+/**
+ * 胶囊描边按钮：用于卡片里的「一键启动」「点击跳转」等次级操作。
+ */
+fun Context.capsuleButton(text: String, accent: Boolean = true): TextView = TextView(this).apply {
+    setText(text)
+    textSize = 13f
+    setTextColor(if (accent) palette().accent else palette().textSecondary)
+    maxLines = 1
+    background = GradientDrawable().apply {
+        cornerRadius = dp(16).toFloat()
+        setColor(if (accent) palette().accentSoft else palette().subtleBoxBg)
+        setStroke(dp(1), if (accent) palette().accent else palette().subtleBoxStroke)
+    }
+    setPadding(dp(12), dp(6), dp(12), dp(6))
+}
+
 fun Context.badgeChip(text: String, textColor: Int, fillColor: Int): View =
     TextView(this).apply {
         setText(text)

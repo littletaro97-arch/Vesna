@@ -23,8 +23,8 @@ android {
         minSdk = 26
         targetSdk = 35
         // 可用 -PversionCode=xx -PversionName=x.y 覆盖（构建测试包时不动源文件）。
-        versionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 8
-        versionName = (project.findProperty("versionName") as String?) ?: "1.5.2"
+        versionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 10
+        versionName = (project.findProperty("versionName") as String?) ?: "1.5.4"
     }
 
     signingConfigs {

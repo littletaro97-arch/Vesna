@@ -2,7 +2,7 @@
 
 一个 Android 游戏辅助小工具：**在游戏画面上常驻一个悬浮按钮，点一下把当前游戏切到后台**，直接回到最近任务界面。
 
-当前版本：**v1.5.2**（versionCode 8，首次公开 Release）
+当前版本：**v1.5.4**（versionCode 10）
 
 ## 它怎么做到的（以及为什么不需要 root / Shizuku）
 
@@ -46,7 +46,7 @@ private void expandQuickSettings() {
 
 「体力耗尽自动切后台」是独立于无障碍服务的实验功能。开启时，Android 会先显示系统屏幕录制授权；Vesna 随后每 0.5 秒在设备本地分析屏幕底部中央区域的绿色像素比例，用于判断游戏体力条是否耗尽。截图帧只在内存中处理，不写入文件，也不会上传。建议只在游戏中开启，并在「只在指定应用里显示」中限定目标应用；识别结果可能误报、漏报或增加耗电。
 
-应用没有分析或广告 SDK。更新功能会访问公开的 GitHub Release API，并在用户确认后下载 APK。运行记录最多保留 300 条在本机；自动返回相关记录可能包含当前应用的包名。Android 云备份与设备迁移均被关闭。用户主动复制诊断信息时，其中还会包含设备品牌、型号和 Android 版本，分享前可先检查内容。
+应用没有分析或广告 SDK。更新功能会访问公开的 GitHub Release API，并在用户确认后下载 APK。主页反馈入口指向项目维护者的小红书与 bilibili 个人主页；点击后由 Android 交给关联应用或浏览器处理，Vesna 不读取平台账号信息。运行记录最多保留 300 条在本机；自动返回相关记录可能包含当前应用的包名。Android 云备份与设备迁移均被关闭。用户主动复制诊断信息时，其中还会包含设备品牌、型号和 Android 版本，分享前可先检查内容。
 
 ## 「从最近任务隐藏」的开关怎么做出来的（一个 API 不存在的坑）
 
@@ -88,6 +88,7 @@ manager.appTasks                                  // 只看得到自己应用的
 ## 功能
 
 - **悬浮按钮**：圆形深色底盘 + 卡片堆叠图标。短按切后台，长按拖动改位置。
+- **主页快捷入口**：「游戏特调」卡片可进入原神特调页，或尝试启动已安装的原神客户端；「问题反馈」卡片链接到[小红书主页](https://www.xiaohongshu.com/user/profile/5067916575)和[bilibili 主页](https://space.bilibili.com/3546980829629370)，由 Android 系统交给关联应用或浏览器打开。
 - 位置按屏幕宽高**比例**保存，旋转屏幕或换分辨率后仍落在视觉上相同的位置。
 - 大小 40–88 dp、不透明度 30–100% 可调，改动即时生效。
 - **「只在指定应用里显示」模式**：用 `UsageStatsManager` 判断前台应用，平时完全不打扰。
@@ -149,7 +150,7 @@ Windows 上构建已签名 Release APK：
 .\tools\build-release.ps1 -InitializeSigning
 
 # 后续版本：版本号和 versionCode 必须与 app/build.gradle.kts 一致
-.\tools\build-release.ps1 -VersionName 1.5.2 -VersionCode 8
+.\tools\build-release.ps1 -VersionName 1.5.4 -VersionCode 10
 ```
 
 首发签名文件保存在 `%APPDATA%\Vesna\vesna-release.p12`，口令由当前 Windows 用户的 DPAPI 加密保存在同目录。签名文件和口令是未来 APK 原位升级所必需的，必须妥善备份；不要将它们提交到 GitHub。需要备份口令时，可在原 Windows 账户下运行 `.\tools\build-release.ps1 -ShowSigningPassword`，并把口令存入自己的密码管理器。Release APK 输出到 `dist\vesna-v<版本号>-release.apk`。
@@ -212,7 +213,8 @@ vesna-v<版本号>-release.apk
 
 ## 版本历史
 
-- **v1.5.2**（2026-09-26）：首个公开 Release（versionCode 8）。修复 Android 14+ 未启用屏幕录制时仍申请 MediaProjection 前台服务类型的问题；把 MediaProjection 初始化移到前台服务启动之后；首帧暂不可用时继续体力识别轮询；关闭 Android 云备份与设备迁移的数据提取。更新项目说明与隐私描述。
+- **v1.5.4**（2026-09-26，versionCode 10）：主页新增原神快捷启动和小红书、bilibili 反馈卡片；修正反馈入口在社交 App 已安装时只打开 App 首页的问题，现在通过 Android 链接处理打开相应个人主页。游戏特调入口并入主页。
+- **v1.5.2**（2026-09-26，versionCode 8）：首个公开 Release。修复 Android 14+ 未启用屏幕录制时仍申请 MediaProjection 前台服务类型的问题；把 MediaProjection 初始化移到前台服务启动之后；首帧暂不可用时继续体力识别轮询；关闭 Android 云备份与设备迁移的数据提取。更新项目说明与隐私描述。
 - **v1.4.0–v1.5.1**：工作区中留有这些版本的 Debug APK，但没有 Git 历史或逐版变更记录，因此不推测各版差异。
 
 - **v1.3.0**（2026-09-25）：

@@ -4,10 +4,13 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.res.Configuration
+import android.net.Uri
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
+import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.Toast
 import com.littletaro.vesna.a11y.BackgroundAccessibilityService
 import com.littletaro.vesna.core.OperationLog
 import com.littletaro.vesna.core.OverlayPrefs
@@ -17,6 +20,7 @@ import com.littletaro.vesna.core.ThemeColors
 import com.littletaro.vesna.overlay.OverlayService
 import com.littletaro.vesna.ui.actionButton
 import com.littletaro.vesna.ui.badgeChip
+import com.littletaro.vesna.ui.capsuleButton
 import com.littletaro.vesna.ui.dp
 import com.littletaro.vesna.ui.labelText
 import com.littletaro.vesna.ui.palette
@@ -205,13 +209,32 @@ class MainActivity : Activity() {
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) },
         )
 
-        root.addView(sectionLabel("额外设置", top = 26))
+        root.addView(sectionLabel("游戏特调", top = 26))
         root.addView(
-            entryCard(
-                title = "游戏优化",
-                description = "原神专属：切后台后自动返回、后续自动识别体力条",
-            ) { open(Intent(this, GameOptimizerActivity::class.java)) },
+            gameTuneCard(),
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) },
+        )
+
+        root.addView(sectionLabel("问题反馈", top = 26))
+        root.addView(
+            feedbackCard(
+                iconRes = R.drawable.ic_xiaohongshu,
+                title = "小红书",
+                subtitle = "小红书号：5067916575",
+                extra = "昵称：小芋头不会取名",
+                url = "https://www.xiaohongshu.com/user/profile/5067916575",
+            ),
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) },
+        )
+        root.addView(
+            feedbackCard(
+                iconRes = R.drawable.ic_bilibili,
+                title = "bilibili",
+                subtitle = "UID：3546980829629370",
+                extra = "昵称：小芋头不会取名小号",
+                url = "https://space.bilibili.com/3546980829629370",
+            ),
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) },
         )
 
         if (updateStatusText.isNotBlank()) {
@@ -379,6 +402,124 @@ class MainActivity : Activity() {
                 RuntimeProtection.openAccessibilitySettings(this)
             }
             .show()
+    }
+
+    // ---- 游戏特调卡片：左（原神图标）中（标题）右（进入特调 + 一键启动 横排）
+    private fun gameTuneCard(): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(14), dp(14), dp(14), dp(14))
+        background = roundedBackground(palette().cardBackground, palette().cardStroke)
+
+        // 左侧：原神图标
+        addView(
+            ImageView(this@MainActivity).apply {
+                setImageResource(R.drawable.ic_genshin)
+                background = roundedBackground(palette().subtleBoxBg, palette().subtleBoxStroke, cornerDp = 12)
+                clipToOutline = true
+                scaleType = ImageView.ScaleType.CENTER_CROP
+            },
+            LinearLayout.LayoutParams(dp(48), dp(48)).apply { rightMargin = dp(12) },
+        )
+
+        // 中间：标题
+        addView(
+            labelText("原神", 17f, palette().textPrimary).apply {
+                gravity = Gravity.CENTER_VERTICAL
+            },
+            LinearLayout.LayoutParams(0, -1, 1f),
+        )
+
+        // 右侧：进入特调 + 一键启动，两个按钮横向并排
+        addView(
+            LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(
+                    capsuleButton("进入特调", accent = true).apply {
+                        setOnClickListener {
+                            open(Intent(this@MainActivity, GameOptimizerActivity::class.java))
+                        }
+                    },
+                    LinearLayout.LayoutParams(-2, -2),
+                )
+                addView(
+                    capsuleButton("一键启动", accent = false).apply {
+                        setOnClickListener { launchGenshin() }
+                    },
+                    LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) },
+                )
+            },
+            LinearLayout.LayoutParams(-2, -1).apply { leftMargin = dp(10) },
+        )
+    }
+
+    private fun launchGenshin() {
+        val candidates = listOf(
+            "com.miHoYo.Yuanshen",
+            "com.miHoYo.GenshinImpact",
+            "com.miHoYo.ys.mihoyo",
+        )
+        for (pkg in candidates) {
+            val intent = packageManager.getLaunchIntentForPackage(pkg)
+            if (intent != null) {
+                OperationLog.record(this, "一键启动原神", pkg)
+                startActivity(intent)
+                return
+            }
+        }
+        OperationLog.record(this, "一键启动失败", "原神未安装")
+        Toast.makeText(this, "未检测到原神，请确认已安装", Toast.LENGTH_SHORT).show()
+    }
+
+    // ---- 问题反馈卡片
+    private fun feedbackCard(
+        iconRes: Int,
+        title: String,
+        subtitle: String,
+        extra: String,
+        url: String,
+    ): View = LinearLayout(this).apply {
+        orientation = LinearLayout.HORIZONTAL
+        gravity = Gravity.CENTER_VERTICAL
+        setPadding(dp(14), dp(12), dp(14), dp(12))
+        background = roundedBackground(palette().cardBackground, palette().cardStroke)
+        isClickable = true
+        setOnClickListener { openSocial(url) }
+
+        addView(
+            ImageView(this@MainActivity).apply {
+                setImageResource(iconRes)
+                background = roundedBackground(palette().subtleBoxBg, palette().subtleBoxStroke, cornerDp = 10)
+                clipToOutline = true
+                scaleType = ImageView.ScaleType.CENTER_CROP
+            },
+            LinearLayout.LayoutParams(dp(40), dp(40)).apply { rightMargin = dp(12) },
+        )
+
+        addView(
+            LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.VERTICAL
+                addView(labelText(title, 16f, palette().textPrimary))
+                addView(labelText(subtitle, 13f, palette().textSecondary, top = 3))
+                addView(labelText(extra, 13f, palette().textSecondary, top = 1))
+            },
+            LinearLayout.LayoutParams(0, -2, 1f),
+        )
+
+        addView(
+            capsuleButton("点击跳转", accent = true),
+            LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(10) },
+        )
+    }
+
+    private fun openSocial(url: String) {
+        // Let Android route the profile URL to its verified app link or a browser.
+        runCatching { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+            .onFailure {
+                OperationLog.record(this, "打开链接失败", url)
+                Toast.makeText(this, "无法打开该链接", Toast.LENGTH_SHORT).show()
+            }
     }
 
     private fun open(intent: Intent) {
