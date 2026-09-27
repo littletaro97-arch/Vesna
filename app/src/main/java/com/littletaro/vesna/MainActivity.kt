@@ -12,6 +12,8 @@ import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.Toast
 import com.littletaro.vesna.a11y.BackgroundAccessibilityService
+import com.littletaro.vesna.core.ForegroundAppTracker
+import com.littletaro.vesna.core.GameSpecialPrefs
 import com.littletaro.vesna.core.OperationLog
 import com.littletaro.vesna.core.OverlayPrefs
 import com.littletaro.vesna.core.RecentsVisibility
@@ -253,6 +255,23 @@ class MainActivity : Activity() {
     private fun switchCard(): View {
         val config = OverlayPrefs.load(this)
         val running = config.enabled && OverlayService.isRunning()
+        val activeGamePackage = if (running) GameSpecialPrefs.activePackage(this) else null
+        val activeProfile = activeGamePackage?.let { GameSpecialPrefs.load(this, it) }
+        val labRunning = activeProfile?.staminaAutoSwitchEnabled == true &&
+            OverlayService.isStaminaCaptureRunning()
+        val gameName = activeGamePackage?.let { ForegroundAppTracker.applicationLabel(this, it) }
+        val statusText = when {
+            !running -> "未开启"
+            activeGamePackage == null -> "运行中"
+            labRunning -> "${gameName}特调-实验室功能运行中"
+            else -> "${gameName}特调-运行中"
+        }
+        val runningDescription = when {
+            !running -> "开启后会在屏幕边缘显示一个圆形按钮，点一下把当前应用切到后台。"
+            labRunning -> "${gameName}特调与实验室体力识别正在运行；触发后按特调倒计时返回游戏。"
+            activeGamePackage != null -> "${gameName}特调正在生效；其它游戏的保存方案不会同时运行。"
+            else -> "按钮已挂在屏幕上。游戏里点一下即退到后台，长按可拖动改位置。"
+        }
 
         return LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -271,7 +290,7 @@ class MainActivity : Activity() {
             )
             titleRow.addView(
                 badgeChip(
-                    if (running) "运行中" else "未开启",
+                    statusText,
                     if (running) palette().green else palette().textFaint,
                     if (running) palette().greenBadgeBg else palette().subtleBoxBg,
                 ),
@@ -281,11 +300,7 @@ class MainActivity : Activity() {
 
             addView(
                 labelText(
-                    if (running) {
-                        "按钮已挂在屏幕上。游戏里点一下即退到后台，长按可拖动改位置。"
-                    } else {
-                        "开启后会在屏幕边缘显示一个圆形按钮，点一下把当前应用切到后台。"
-                    },
+                    runningDescription,
                     12f,
                     palette().textSecondary,
                     top = 8,
@@ -405,53 +420,66 @@ class MainActivity : Activity() {
     }
 
     // ---- 游戏特调卡片：左（原神图标）中（标题）右（进入特调 + 一键启动 横排）
-    private fun gameTuneCard(): View = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(14), dp(14), dp(14), dp(14))
-        background = roundedBackground(palette().cardBackground, palette().cardStroke)
+    private fun gameTuneCard(): View {
+        val gamePackage = GameSpecialPrefs.resolveGenshinPackage(this)
+        val specialInEffect = OverlayPrefs.load(this).enabled && OverlayService.isRunning() &&
+            GameSpecialPrefs.isActive(this, gamePackage)
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+            background = roundedBackground(palette().cardBackground, palette().cardStroke)
 
-        // 左侧：原神图标
-        addView(
-            ImageView(this@MainActivity).apply {
-                setImageResource(R.drawable.ic_genshin)
-                background = roundedBackground(palette().subtleBoxBg, palette().subtleBoxStroke, cornerDp = 12)
-                clipToOutline = true
-                scaleType = ImageView.ScaleType.CENTER_CROP
-            },
-            LinearLayout.LayoutParams(dp(48), dp(48)).apply { rightMargin = dp(12) },
-        )
+            // 左侧：原神图标
+            addView(
+                ImageView(this@MainActivity).apply {
+                    setImageResource(R.drawable.ic_genshin)
+                    background = roundedBackground(palette().subtleBoxBg, palette().subtleBoxStroke, cornerDp = 12)
+                    clipToOutline = true
+                    scaleType = ImageView.ScaleType.CENTER_CROP
+                },
+                LinearLayout.LayoutParams(dp(48), dp(48)).apply { rightMargin = dp(12) },
+            )
 
-        // 中间：标题
-        addView(
-            labelText("原神", 17f, palette().textPrimary).apply {
-                gravity = Gravity.CENTER_VERTICAL
-            },
-            LinearLayout.LayoutParams(0, -1, 1f),
-        )
+            // 中间：标题
+            addView(
+                labelText("原神", 17f, palette().textPrimary).apply {
+                    gravity = Gravity.CENTER_VERTICAL
+                },
+                LinearLayout.LayoutParams(0, -1, 1f),
+            )
 
-        // 右侧：进入特调 + 一键启动，两个按钮横向并排
-        addView(
-            LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                addView(
-                    capsuleButton("进入特调", accent = true).apply {
-                        setOnClickListener {
-                            open(Intent(this@MainActivity, GameOptimizerActivity::class.java))
-                        }
-                    },
-                    LinearLayout.LayoutParams(-2, -2),
-                )
-                addView(
-                    capsuleButton("一键启动", accent = false).apply {
-                        setOnClickListener { launchGenshin() }
-                    },
-                    LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) },
-                )
-            },
-            LinearLayout.LayoutParams(-2, -1).apply { leftMargin = dp(10) },
-        )
+            // 右侧：进入特调（绿色代表当前生效）+ 一键启动
+            addView(
+                LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    addView(
+                        capsuleButton(
+                            "进入特调",
+                            accent = specialInEffect,
+                            selectedGreen = specialInEffect,
+                        ).apply {
+                            setOnClickListener {
+                                open(
+                                    Intent(this@MainActivity, GameOptimizerActivity::class.java)
+                                        .putExtra(GameSpecialPrefs.EXTRA_GAME_PACKAGE, gamePackage)
+                                        .putExtra(GameSpecialPrefs.EXTRA_GAME_LABEL, "原神"),
+                                )
+                            }
+                        },
+                        LinearLayout.LayoutParams(-2, -2),
+                    )
+                    addView(
+                        capsuleButton("一键启动", accent = false).apply {
+                            setOnClickListener { launchGenshin() }
+                        },
+                        LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) },
+                    )
+                },
+                LinearLayout.LayoutParams(-2, -1).apply { leftMargin = dp(10) },
+            )
+        }
     }
 
     private fun launchGenshin() {

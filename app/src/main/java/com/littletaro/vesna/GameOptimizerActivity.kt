@@ -9,8 +9,10 @@ import android.media.projection.MediaProjectionManager
 import android.os.Bundle
 import android.view.View
 import android.widget.LinearLayout
+import com.littletaro.vesna.core.ForegroundAppTracker
+import com.littletaro.vesna.core.GameSpecialConfig
+import com.littletaro.vesna.core.GameSpecialPrefs
 import com.littletaro.vesna.core.OperationLog
-import com.littletaro.vesna.core.OverlayConfig
 import com.littletaro.vesna.core.OverlayPrefs
 import com.littletaro.vesna.core.RuntimeProtection
 import com.littletaro.vesna.overlay.OverlayService
@@ -35,6 +37,17 @@ import com.littletaro.vesna.ui.toggleRow
 class GameOptimizerActivity : Activity() {
 
     private val nightAtCreate by lazy { com.littletaro.vesna.core.ThemeColors.isNight(this) }
+    private val gamePackage by lazy {
+        intent.getStringExtra(GameSpecialPrefs.EXTRA_GAME_PACKAGE)
+            ?.takeIf { it.isNotBlank() }
+            ?: GameSpecialPrefs.resolveGenshinPackage(this)
+    }
+    private val gameLabel by lazy {
+        intent.getStringExtra(GameSpecialPrefs.EXTRA_GAME_LABEL)
+            ?.takeIf { it.isNotBlank() }
+            ?: ForegroundAppTracker.applicationLabel(this, gamePackage)
+    }
+    private var promptedForMissingProjection = false
 
     companion object {
         private const val REQUEST_MEDIA_PROJECTION = 1001
@@ -48,6 +61,7 @@ class GameOptimizerActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        maybeRequestSavedLabAuthorization()
         renderSafely()
     }
 
@@ -60,8 +74,9 @@ class GameOptimizerActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode != REQUEST_MEDIA_PROJECTION) return
         if (resultCode == Activity.RESULT_OK && data != null) {
-            // 先保存配置，再把授权结果传给服务启动截屏。
+            GameSpecialPrefs.setActivePackage(this, gamePackage)
             saveConfig { it.copy(staminaAutoSwitchEnabled = true) }
+            OverlayPrefs.setEnabled(this, true)
             OverlayService.requestMediaProjection(this, data)
             OperationLog.record(this, "已授权 MediaProjection，开启体力条自动切后台")
         } else {
@@ -76,7 +91,8 @@ class GameOptimizerActivity : Activity() {
     }
 
     private fun buildScreen(): View {
-        val config = OverlayPrefs.load(this)
+        val config = GameSpecialPrefs.load(this, gamePackage)
+        val profileActive = GameSpecialPrefs.isActive(this, gamePackage)
         val scroll = screenScroll()
         val root = screenRoot()
         scroll.addView(root, LinearLayout.LayoutParams(-1, -2))
@@ -88,14 +104,32 @@ class GameOptimizerActivity : Activity() {
                 setOnClickListener { finish() }
             },
         )
-        root.addView(labelText("游戏优化", 24f, palette().textPrimary))
+        root.addView(labelText("$gameLabel 特调", 24f, palette().textPrimary))
         root.addView(
             labelText(
-                "针对原神的额外辅助功能。体力条识别仍处于实验阶段。",
+                "本方案独立保存；切换到其它游戏特调时，本方案设置会保留。体力条识别仍处于实验阶段。",
                 12f,
                 palette().textSecondary,
                 top = 6,
             ),
+        )
+
+        root.addView(
+            toggleRow(
+                title = "设为当前生效特调",
+                description = if (profileActive) {
+                    if (OverlayService.isRunning()) {
+                        "${gameLabel}特调正在生效；启用其它游戏特调会自动切换。"
+                    } else {
+                        "已选中此方案；开启悬浮按钮后生效。"
+                    }
+                } else {
+                    "尚未生效；启用后会自动停用其它游戏方案，原有设置保留。"
+                },
+                checked = profileActive,
+                onToggle = { toggleActiveProfile(profileActive, config) },
+            ),
+            LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(14) },
         )
 
         // ---- 切后台后自动返回
@@ -104,7 +138,7 @@ class GameOptimizerActivity : Activity() {
             toggleRow(
                 title = "自动返回游戏",
                 description = if (config.autoReturnEnabled) {
-                    "已开启 —— 点悬浮按钮切到后台后，会在设定时间后自动回到游戏。"
+                    "已开启 —— 手动触发返回刚才的应用；体力触发倒计时结束后返回 $gameLabel。"
                 } else {
                     "已关闭 —— 切到后台后停留在最近任务/桌面，不会自动返回。"
                 },
@@ -138,7 +172,11 @@ class GameOptimizerActivity : Activity() {
             toggleRow(
                 title = "体力耗尽自动切后台",
                 description = if (config.staminaAutoSwitchEnabled) {
-                    "已开启 —— 红色达到阈值并确认后只进入一次最近任务界面；黄色恢复后重新待命。"
+                    if (OverlayService.isStaminaCaptureRunning()) {
+                        "实验室识别运行中 —— 红色达到阈值并确认后进入最近任务界面；黄色恢复后重新待命。"
+                    } else {
+                        "方案已保存，但当前屏幕捕获未运行；返回本页会请求重新授权。"
+                    }
                 } else {
                     "已关闭 —— 需要悬浮窗、无障碍和屏幕捕获授权；仅在原神画面中使用。"
                 },
@@ -176,7 +214,7 @@ class GameOptimizerActivity : Activity() {
                         addView(badgeChip("实验功能", palette().accent, palette().cardBackground))
                         addView(
                             labelText(
-                                "建议先限定原神并从 25% 阈值开始。自动切换只进入最近任务界面，不会自动拉起应用。",
+                                "建议先限定 $gameLabel 并从 25% 阈值开始。若同时开启自动返回，会显示倒计时并返回此游戏。",
                                 12f,
                                 palette().textSecondary,
                             ),
@@ -191,8 +229,9 @@ class GameOptimizerActivity : Activity() {
         return scroll
     }
 
-    private fun toggleAutoReturn(config: OverlayConfig) {
+    private fun toggleAutoReturn(config: GameSpecialConfig) {
         val next = !config.autoReturnEnabled
+        if (next) GameSpecialPrefs.setActivePackage(this, gamePackage)
         saveConfig { it.copy(autoReturnEnabled = next) }
         OperationLog.record(
             this,
@@ -201,7 +240,7 @@ class GameOptimizerActivity : Activity() {
         renderSafely()
     }
 
-    private fun toggleStaminaAutoSwitch(config: OverlayConfig) {
+    private fun toggleStaminaAutoSwitch(config: GameSpecialConfig) {
         if (config.staminaAutoSwitchEnabled) {
             // 关闭：直接保存，服务会在 reloadConfig 中释放 MediaProjection。
             saveConfig { it.copy(staminaAutoSwitchEnabled = false) }
@@ -240,16 +279,49 @@ class GameOptimizerActivity : Activity() {
             )
             .setPositiveButton("仍要开启") { _, _ ->
                 OperationLog.record(this, "用户确认开启实验室功能：体力条自动切后台")
-                val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-                startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_MEDIA_PROJECTION)
+                requestMediaProjectionConsent()
             }
             .setNegativeButton("取消", null)
             .show()
     }
 
-    private fun saveConfig(transform: (OverlayConfig) -> OverlayConfig) {
-        val updated = transform(OverlayPrefs.load(this))
-        OverlayPrefs.save(this, updated)
+    private fun saveConfig(transform: (GameSpecialConfig) -> GameSpecialConfig) {
+        val updated = transform(GameSpecialPrefs.load(this, gamePackage))
+        GameSpecialPrefs.save(this, gamePackage, updated)
         OverlayService.reloadConfig()
+    }
+
+    private fun toggleActiveProfile(isActive: Boolean, config: GameSpecialConfig) {
+        val nextPackage = if (isActive) null else gamePackage
+        GameSpecialPrefs.setActivePackage(this, nextPackage)
+        OverlayService.reloadConfig()
+        OperationLog.record(
+            this,
+            if (nextPackage == null) "已停用游戏特调" else "已切换生效游戏特调",
+            nextPackage ?: gamePackage,
+        )
+        if (nextPackage != null && config.staminaAutoSwitchEnabled &&
+            !OverlayService.isStaminaCaptureRunning()
+        ) {
+            requestMediaProjectionConsent()
+        } else {
+            renderSafely()
+        }
+    }
+
+    private fun maybeRequestSavedLabAuthorization() {
+        if (promptedForMissingProjection || !OverlayPrefs.load(this).enabled ||
+            !GameSpecialPrefs.isActive(this, gamePackage)
+        ) return
+        val config = GameSpecialPrefs.load(this, gamePackage)
+        if (config.staminaAutoSwitchEnabled && !OverlayService.isStaminaCaptureRunning()) {
+            requestMediaProjectionConsent()
+        }
+    }
+
+    private fun requestMediaProjectionConsent() {
+        promptedForMissingProjection = true
+        val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_MEDIA_PROJECTION)
     }
 }

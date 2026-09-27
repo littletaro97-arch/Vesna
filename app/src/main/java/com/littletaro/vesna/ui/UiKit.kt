@@ -84,15 +84,31 @@ fun Context.actionButton(text: String, primary: Boolean): Button = Button(this).
 /**
  * 胶囊描边按钮：用于卡片里的「一键启动」「点击跳转」等次级操作。
  */
-fun Context.capsuleButton(text: String, accent: Boolean = true): TextView = TextView(this).apply {
+fun Context.capsuleButton(
+    text: String,
+    accent: Boolean = true,
+    selectedGreen: Boolean = false,
+): TextView = TextView(this).apply {
     setText(text)
     textSize = 13f
-    setTextColor(if (accent) palette().accent else palette().textSecondary)
+    setTextColor(when {
+        selectedGreen -> palette().green
+        accent -> palette().accent
+        else -> palette().textSecondary
+    })
     maxLines = 1
     background = GradientDrawable().apply {
         cornerRadius = dp(16).toFloat()
-        setColor(if (accent) palette().accentSoft else palette().subtleBoxBg)
-        setStroke(dp(1), if (accent) palette().accent else palette().subtleBoxStroke)
+        setColor(when {
+            selectedGreen -> palette().greenBadgeBg
+            accent -> palette().accentSoft
+            else -> palette().subtleBoxBg
+        })
+        setStroke(dp(1), when {
+            selectedGreen -> palette().green
+            accent -> palette().accent
+            else -> palette().subtleBoxStroke
+        })
     }
     setPadding(dp(12), dp(6), dp(12), dp(6))
 }

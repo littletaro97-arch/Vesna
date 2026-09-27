@@ -32,6 +32,8 @@ import com.littletaro.vesna.R
 import com.littletaro.vesna.a11y.BackgroundAccessibilityService
 import com.littletaro.vesna.a11y.SendToBackgroundOutcome
 import com.littletaro.vesna.core.ForegroundAppTracker
+import com.littletaro.vesna.core.GameSpecialConfig
+import com.littletaro.vesna.core.GameSpecialPrefs
 import com.littletaro.vesna.core.OperationLog
 import com.littletaro.vesna.core.OverlayConfig
 import com.littletaro.vesna.core.OverlayPrefs
@@ -58,6 +60,7 @@ class OverlayService : Service() {
 
     private var buttonView: ToggleButtonView? = null
     private var config = OverlayConfig()
+    private var activeGamePackage: String? = null
 
     private var dragStartX = 0
     private var dragStartY = 0
@@ -75,6 +78,7 @@ class OverlayService : Service() {
     private var mediaProjectionCallback: MediaProjection.Callback? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
+    private var mediaProjectionGamePackage: String? = null
     private var staminaConsecutiveLowFrames = 0
     private var staminaConsecutiveNormalFrames = 0
     private var staminaLowTriggered = false
@@ -97,7 +101,7 @@ class OverlayService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         userStopRequested = false
-        config = OverlayPrefs.load(this)
+        config = loadRuntimeConfig()
 
         val overlayGranted = runCatching { Settings.canDrawOverlays(this) }
             .onFailure { OperationLog.record(this, "悬浮窗权限检查异常", it.javaClass.simpleName) }
@@ -117,7 +121,6 @@ class OverlayService : Service() {
         // START_STICKY 重建服务时不会恢复旧的 MediaProjection 授权；重新授权前保持功能关闭。
         if (config.staminaAutoSwitchEnabled && projectionIntent == null && mediaProjection == null) {
             config = config.copy(staminaAutoSwitchEnabled = false)
-            OverlayPrefs.save(this, config)
             OperationLog.record(this, "屏幕捕获授权未恢复，体力识别保持关闭")
         }
 
@@ -152,7 +155,7 @@ class OverlayService : Service() {
         val previousX = params.x
         val previousY = params.y
         OperationLog.record(this, "屏幕配置变化，重建悬浮按钮")
-        config = OverlayPrefs.load(this)
+        config = loadRuntimeConfig()
         attachButton()
         // attachButton 会按当前方向比例落点；这里把位置恢复成变化前的绝对坐标，防止跳变。
         buttonView?.let { newView ->
@@ -249,14 +252,16 @@ class OverlayService : Service() {
 
     // ---------------------------------------------------------------- 交互
 
-    private fun onButtonTriggered(allowAutoReturn: Boolean = true) {
+    private fun onButtonTriggered(
+        autoReturnTargetPackage: String? = null,
+        allowAutoReturn: Boolean = true,
+    ) {
         if (!allowAutoReturn) {
-            // 体力触发只停留在最近任务界面，并清除已经排队的自动返回任务。
+            // 此次触发不启用自动返回时，清除已经排队的返回任务。
             cancelAutoReturn()
         }
-        // 仅手动切换且启用了自动返回时，才记录当前游戏包名。
         val targetPackage = if (allowAutoReturn && config.autoReturnEnabled) {
-            ForegroundAppTracker.currentForegroundPackage(this)
+            autoReturnTargetPackage ?: ForegroundAppTracker.currentForegroundPackage(this)
         } else {
             null
         }
@@ -282,10 +287,8 @@ class OverlayService : Service() {
     }
 
     /**
-     * 切到后台成功后，按配置延迟把刚才的应用拉回前台。
-     *
-     * 这里依赖 UsageStats 在切走前最后一次记录到的前台包名。如果用户手速极快、
-     * 切走前没有可用事件，就放弃自动返回，避免把错误应用拉起来。
+     * 切到后台成功后，按配置延迟拉回目标应用。手动操作依赖 UsageStats，
+     * 体力触发则明确使用当前生效方案的游戏包名。
      */
     private fun scheduleAutoReturn(targetPackage: String?, delayMs: Long) {
         cancelAutoReturn()
@@ -312,6 +315,7 @@ class OverlayService : Service() {
         }
         autoReturnRunnable = runnable
         handler.postDelayed(runnable, delayMs)
+        refreshVisibilityByForeground()
         OperationLog.record(this, "已安排 ${delayMs / 1000L} 秒后自动返回", targetPackage)
     }
 
@@ -420,6 +424,11 @@ class OverlayService : Service() {
 
     private fun refreshVisibilityByForeground() {
         val view = buttonView ?: return
+        if (autoReturnRunnable != null) {
+            // 倒计时期间保持悬浮按钮可见，即使目标应用过滤暂时隐藏了它。
+            view.visibility = View.VISIBLE
+            return
+        }
         if (!config.restrictToApps || config.targetPackages.isEmpty()) {
             view.visibility = View.VISIBLE
             return
@@ -440,16 +449,25 @@ class OverlayService : Service() {
             val projection = manager.getMediaProjection(Activity.RESULT_OK, data)
                 ?: throw IllegalStateException("MediaProjection 获取失败")
             mediaProjection = projection
+            mediaProjectionGamePackage = activeGamePackage
 
             val callback = object : MediaProjection.Callback() {
                 override fun onStop() {
                     if (mediaProjection !== projection) return
+                    val ownerPackage = mediaProjectionGamePackage
                     releaseMediaProjection(stopProjection = false)
-                    config = OverlayPrefs.load(this@OverlayService)
-                        .copy(staminaAutoSwitchEnabled = false)
-                    OverlayPrefs.save(this@OverlayService, config)
+                    if (!ownerPackage.isNullOrBlank()) {
+                        val profile = GameSpecialPrefs.load(this@OverlayService, ownerPackage)
+                        GameSpecialPrefs.save(
+                            this@OverlayService,
+                            ownerPackage,
+                            profile.copy(staminaAutoSwitchEnabled = false),
+                        )
+                    }
+                    config = loadRuntimeConfig()
                     updateProjectionForegroundType(false)
                     OperationLog.record(this@OverlayService, "屏幕捕获已停止，体力识别已关闭")
+                    notifyRunningChanged(this@OverlayService)
                 }
             }
             mediaProjectionCallback = callback
@@ -478,8 +496,11 @@ class OverlayService : Service() {
             handler.post(staminaAnalyzer)
         } catch (error: Exception) {
             releaseMediaProjection()
-            config = OverlayPrefs.load(this).copy(staminaAutoSwitchEnabled = false)
-            OverlayPrefs.save(this, config)
+            activeGamePackage?.let { packageName ->
+                val profile = GameSpecialPrefs.load(this, packageName)
+                GameSpecialPrefs.save(this, packageName, profile.copy(staminaAutoSwitchEnabled = false))
+            }
+            config = loadRuntimeConfig()
             updateProjectionForegroundType(false)
             OperationLog.record(
                 this,
@@ -495,6 +516,7 @@ class OverlayService : Service() {
         val callback = mediaProjectionCallback
         mediaProjection = null
         mediaProjectionCallback = null
+        mediaProjectionGamePackage = null
         virtualDisplay?.release()
         virtualDisplay = null
         imageReader?.close()
@@ -590,7 +612,10 @@ class OverlayService : Service() {
                         "检测到红色体力条（红色占比$redPercent% ≥ 阈值$threshold%），进入最近任务界面",
                         foreground ?: "",
                     )
-                    onButtonTriggered(allowAutoReturn = false)
+                    onButtonTriggered(
+                        autoReturnTargetPackage = activeGamePackage,
+                        allowAutoReturn = config.autoReturnEnabled,
+                    )
                 } else {
                     OperationLog.record(
                         this,
@@ -704,6 +729,19 @@ class OverlayService : Service() {
         }
     }
 
+    private fun loadRuntimeConfig(): OverlayConfig {
+        val base = OverlayPrefs.load(this)
+        activeGamePackage = GameSpecialPrefs.activePackage(this)
+        val profile = activeGamePackage?.let { GameSpecialPrefs.load(this, it) } ?: GameSpecialConfig()
+        return base.copy(
+            autoReturnEnabled = profile.autoReturnEnabled,
+            autoReturnDelayMs = profile.autoReturnDelayMs,
+            staminaAutoSwitchEnabled = profile.staminaAutoSwitchEnabled,
+            staminaThresholdPercent = profile.staminaThresholdPercent,
+            staminaConfirmFrames = profile.staminaConfirmFrames,
+        )
+    }
+
     companion object {
         private const val CHANNEL_ID = "vesna_overlay"
         private const val NOTIFICATION_ID = 4101
@@ -729,6 +767,11 @@ class OverlayService : Service() {
 
         /** 悬浮按钮此刻是否真的挂在屏幕上。 */
         fun isRunning(): Boolean = instance != null
+
+        /** 屏幕捕获与体力分析器此刻都已运行。 */
+        fun isStaminaCaptureRunning(): Boolean = instance?.let {
+            it.config.staminaAutoSwitchEnabled && it.mediaProjection != null && it.imageReader != null
+        } == true
 
         /**
          * 存活状态订阅者。服务挂起按钮、以及销毁时都会回调一次。
@@ -764,16 +807,33 @@ class OverlayService : Service() {
         fun reloadConfig() {
             val service = instance ?: return
             service.handler.post {
-                val hadStamina = service.config.staminaAutoSwitchEnabled
-                service.config = OverlayPrefs.load(service)
+                val previousConfig = service.config
+                val previousGamePackage = service.activeGamePackage
+                service.config = service.loadRuntimeConfig()
+                val gameChanged = previousGamePackage != service.activeGamePackage
+                if (gameChanged || (previousConfig.autoReturnEnabled && !service.config.autoReturnEnabled)) {
+                    service.cancelAutoReturn()
+                }
+                if (gameChanged) {
+                    service.staminaConsecutiveLowFrames = 0
+                    service.staminaConsecutiveNormalFrames = 0
+                    service.staminaLowTriggered = false
+                    if (service.mediaProjection != null && service.config.staminaAutoSwitchEnabled) {
+                        service.mediaProjectionGamePackage = service.activeGamePackage
+                    }
+                }
                 service.applyGeometry()
                 service.restartForegroundPolling()
                 service.refreshVisibilityByForeground()
                 // 用户关闭体力条自动切后台时，立刻释放 MediaProjection。
-                if (hadStamina && !service.config.staminaAutoSwitchEnabled) {
+                if (previousConfig.staminaAutoSwitchEnabled && !service.config.staminaAutoSwitchEnabled) {
                     service.releaseMediaProjection()
                     service.updateProjectionForegroundType(false)
                     OperationLog.record(service, "已关闭体力条自动切后台，释放 MediaProjection")
+                }
+                if (service.config.staminaAutoSwitchEnabled && service.imageReader != null) {
+                    service.handler.removeCallbacks(service.staminaAnalyzer)
+                    service.handler.post(service.staminaAnalyzer)
                 }
             }
         }

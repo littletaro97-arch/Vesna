@@ -35,30 +35,15 @@ data class OverlayConfig(
      * 默认开启：这样清理后台时不会把它连常驻服务一起清掉。
      */
     val hideFromRecents: Boolean = true,
-    /**
-     * 切到后台后是否自动返回游戏（原神专属优化）。
-     * 默认关闭：用户需要到「游戏优化」里手动开启。
-     */
+    /** 运行时注入的当前游戏方案值；旧全局 key 仅用于迁移。 */
     val autoReturnEnabled: Boolean = false,
-    /**
-     * 自动返回的等待时间，单位毫秒。默认 8 秒。
-     */
+    /** 当前游戏方案的运行时返回等待时间，单位毫秒。 */
     val autoReturnDelayMs: Long = 8_000L,
-    /**
-     * 是否开启原神体力条自动切后台。
-     *
-     * 开启后，[com.littletaro.vesna.overlay.OverlayService] 会通过 MediaProjection 周期性截屏，
-     * 在角色附近检测黄色/红色体力条；当红色像素占比达到阈值时触发切后台。
-     */
+    /** 当前游戏方案的运行时屏幕识别开关；旧全局 key 仅用于迁移。 */
     val staminaAutoSwitchEnabled: Boolean = false,
-    /**
-     * 角色附近可识别体力条颜色像素中红色所占的阈值（百分比）。
-     * 黄色表示正常，红色占比达到此值并通过连续帧确认后视为体力偏低。
-     */
+    /** 当前游戏方案的运行时识别阈值。 */
     val staminaThresholdPercent: Int = 25,
-    /**
-     * 连续确认帧数，避免单帧误报。每 500ms 采样一次，默认 2 帧 ≈ 1 秒。
-     */
+    /** 当前游戏方案的运行时连续确认帧数。 */
     val staminaConfirmFrames: Int = 2,
 ) {
     val alpha: Float get() = alphaPercent.coerceIn(MIN_ALPHA_PERCENT, 100) / 100f
@@ -146,11 +131,6 @@ object OverlayPrefs {
             .putBoolean(KEY_RESTRICT, config.restrictToApps)
             .putString(KEY_PACKAGES, config.targetPackages.joinToString(PACKAGE_SEPARATOR))
             .putBoolean(KEY_HIDE_FROM_RECENTS, config.hideFromRecents)
-            .putBoolean(KEY_AUTO_RETURN_ENABLED, config.autoReturnEnabled)
-            .putLong(KEY_AUTO_RETURN_DELAY_MS, config.autoReturnDelayMs)
-            .putBoolean(KEY_STAMINA_AUTO_SWITCH_ENABLED, config.staminaAutoSwitchEnabled)
-            .putInt(KEY_STAMINA_THRESHOLD_PERCENT, config.staminaThresholdPercent)
-            .putInt(KEY_STAMINA_CONFIRM_FRAMES, config.staminaConfirmFrames)
 
         // 同时写旧 key，作为方向未保存时的回退；再按方向写专属 key。
         editor.putFloat(KEY_X_RATIO, config.xRatio)
