@@ -138,7 +138,7 @@ class GameOptimizerActivity : Activity() {
             toggleRow(
                 title = "体力耗尽自动切后台",
                 description = if (config.staminaAutoSwitchEnabled) {
-                    "已开启 —— 每 0.5 秒分析角色附近的黄/红体力条；红色达到阈值并连续确认后切后台。"
+                    "已开启 —— 红色达到阈值并确认后只进入一次最近任务界面；黄色恢复后重新待命。"
                 } else {
                     "已关闭 —— 需要悬浮窗、无障碍和屏幕捕获授权；仅在原神画面中使用。"
                 },
@@ -176,7 +176,7 @@ class GameOptimizerActivity : Activity() {
                         addView(badgeChip("实验功能", palette().accent, palette().cardBackground))
                         addView(
                             labelText(
-                                "建议先在「仅在指定应用显示」里勾选原神，并把阈值设为 25% 测试。",
+                                "建议先限定原神并从 25% 阈值开始。自动切换只进入最近任务界面，不会自动拉起应用。",
                                 12f,
                                 palette().textSecondary,
                             ),

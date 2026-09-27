@@ -76,6 +76,8 @@ class OverlayService : Service() {
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var staminaConsecutiveLowFrames = 0
+    private var staminaConsecutiveNormalFrames = 0
+    private var staminaLowTriggered = false
 
     private val foregroundPoll = object : Runnable {
         override fun run() {
@@ -247,14 +249,22 @@ class OverlayService : Service() {
 
     // ---------------------------------------------------------------- 交互
 
-    private fun onButtonTriggered() {
-        // 切出去之前先记住当前游戏，用于自动拉回来。
-        val targetPackage = ForegroundAppTracker.currentForegroundPackage(this)
+    private fun onButtonTriggered(allowAutoReturn: Boolean = true) {
+        if (!allowAutoReturn) {
+            // 体力触发只停留在最近任务界面，并清除已经排队的自动返回任务。
+            cancelAutoReturn()
+        }
+        // 仅手动切换且启用了自动返回时，才记录当前游戏包名。
+        val targetPackage = if (allowAutoReturn && config.autoReturnEnabled) {
+            ForegroundAppTracker.currentForegroundPackage(this)
+        } else {
+            null
+        }
 
         when (BackgroundAccessibilityService.sendCurrentAppToBackground()) {
             SendToBackgroundOutcome.SUCCESS -> {
                 OperationLog.record(this, "已把当前应用切到后台")
-                if (config.autoReturnEnabled) {
+                if (allowAutoReturn && config.autoReturnEnabled) {
                     scheduleAutoReturn(targetPackage, config.autoReturnDelayMs)
                 }
             }
@@ -462,6 +472,8 @@ class OverlayService : Service() {
 
             OperationLog.record(this, "MediaProjection 已启动，开始识别原神体力条")
             staminaConsecutiveLowFrames = 0
+            staminaConsecutiveNormalFrames = 0
+            staminaLowTriggered = false
             handler.removeCallbacks(staminaAnalyzer)
             handler.post(staminaAnalyzer)
         } catch (error: Exception) {
@@ -492,6 +504,8 @@ class OverlayService : Service() {
             if (stopProjection) runCatching { projection.stop() }
         }
         staminaConsecutiveLowFrames = 0
+        staminaConsecutiveNormalFrames = 0
+        staminaLowTriggered = false
     }
 
     private fun analyzeStaminaFrame() {
@@ -506,6 +520,7 @@ class OverlayService : Service() {
             (foreground == null || !config.targetPackages.contains(foreground))
         ) {
             staminaConsecutiveLowFrames = 0
+            staminaConsecutiveNormalFrames = 0
             scheduleNextStaminaAnalysis()
             return
         }
@@ -560,25 +575,43 @@ class OverlayService : Service() {
             .coerceAtLeast(STAMINA_MIN_CLASSIFIED_PIXELS)
         val redPercent = if (classifiedPixels > 0) redCount * 100 / classifiedPixels else 0
         val threshold = config.staminaThresholdPercent.coerceIn(5, 80)
+        val confirmFrames = config.staminaConfirmFrames.coerceAtLeast(1)
+        val hasNormalYellow = yellowCount >= minClassifiedPixels && redPercent < threshold
 
         if (classifiedPixels >= minClassifiedPixels && redPercent >= threshold) {
-            staminaConsecutiveLowFrames++
-            if (staminaConsecutiveLowFrames >= config.staminaConfirmFrames.coerceAtLeast(1)) {
-                OperationLog.record(
-                    this,
-                    "检测到红色体力条（红色占比$redPercent% ≥ 阈值$threshold%），自动切后台",
-                    foreground ?: "",
-                )
-                staminaConsecutiveLowFrames = 0
-                onButtonTriggered()
+            staminaConsecutiveNormalFrames = 0
+            if (!staminaLowTriggered) {
+                staminaConsecutiveLowFrames++
+                if (staminaConsecutiveLowFrames >= confirmFrames) {
+                    staminaLowTriggered = true
+                    staminaConsecutiveLowFrames = 0
+                    OperationLog.record(
+                        this,
+                        "检测到红色体力条（红色占比$redPercent% ≥ 阈值$threshold%），进入最近任务界面",
+                        foreground ?: "",
+                    )
+                    onButtonTriggered(allowAutoReturn = false)
+                } else {
+                    OperationLog.record(
+                        this,
+                        "检测到红色体力条（红色占比$redPercent% ≥ 阈值$threshold%），累计 $staminaConsecutiveLowFrames 帧",
+                    )
+                }
             } else {
-                OperationLog.record(
-                    this,
-                    "检测到红色体力条（红色占比$redPercent% ≥ 阈值$threshold%），累计 $staminaConsecutiveLowFrames 帧",
-                )
+                staminaConsecutiveLowFrames = 0
             }
         } else {
             staminaConsecutiveLowFrames = 0
+            if (hasNormalYellow) {
+                staminaConsecutiveNormalFrames++
+                if (staminaConsecutiveNormalFrames >= confirmFrames) {
+                    staminaLowTriggered = false
+                    staminaConsecutiveNormalFrames = 0
+                }
+            } else {
+                // Unknown/moved pixels do not re-arm the action; require positive yellow evidence.
+                staminaConsecutiveNormalFrames = 0
+            }
         }
 
         scheduleNextStaminaAnalysis()
