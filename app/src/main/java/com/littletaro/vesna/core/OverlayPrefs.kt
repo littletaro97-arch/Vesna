@@ -38,7 +38,7 @@ data class OverlayConfig(
     /** 运行时注入的当前游戏方案值；旧全局 key 仅用于迁移。 */
     val autoReturnEnabled: Boolean = false,
     /** 当前游戏方案的运行时返回等待时间，单位毫秒。 */
-    val autoReturnDelayMs: Long = 8_000L,
+    val autoReturnDelayMs: Long = 10_000L,
     /** 当前游戏方案的运行时屏幕识别开关；旧全局 key 仅用于迁移。 */
     val staminaAutoSwitchEnabled: Boolean = false,
     /** 当前游戏方案的运行时识别阈值。 */

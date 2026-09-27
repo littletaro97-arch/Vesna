@@ -159,7 +159,7 @@ class GameOptimizerActivity : Activity() {
         )
         root.addView(
             labelText(
-                "建议设为 8 秒：足够完成一次「冲刺/重击消耗体力 → 自动恢复」的循环。",
+                "建议设为 10 秒：为体力恢复和游戏画面切换留出余量。",
                 12f,
                 palette().textFaint,
                 top = 8,
@@ -200,7 +200,7 @@ class GameOptimizerActivity : Activity() {
                 title = "连续确认帧数",
                 value = config.staminaConfirmFrames,
                 range = 1..5,
-                label = { "$it 帧（≈ ${it * 0.5} 秒）" },
+                label = { "$it 帧（≈ ${it * 0.25} 秒）" },
                 onChanged = { value -> saveConfig { it.copy(staminaConfirmFrames = value) } },
             ),
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) },
