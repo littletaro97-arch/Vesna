@@ -50,7 +50,7 @@ import kotlin.math.roundToInt
  * 轮询本身不读取任何内容，只问系统「最近进入前台的是哪个包名」。
  *
  * 关于「原神体力条自动切后台」：需要用户在游戏优化页授权 MediaProjection 后，
- * 服务会创建 [ImageReader] + [VirtualDisplay]，每 250ms 在角色附近的中央搜索区分析黄/红体力条；
+ * 服务会创建 [ImageReader] + [VirtualDisplay]，每 500ms 分析角色附近的黄/红体力条；
  * 红色像素比例达到阈值并连续确认后，调用 [onButtonTriggered] 自动切后台。
  */
 class OverlayService : Service() {
@@ -582,11 +582,8 @@ class OverlayService : Service() {
                     val g = buffer.get().toInt() and 0xFF
                     val b = buffer.get().toInt() and 0xFF
                     buffer.get() // alpha
-                    if (isStaminaRed(r, g, b)) {
-                        redCount++
-                    } else if (isStaminaYellow(r, g, b)) {
-                        yellowCount++
-                    }
+                    if (isStaminaRed(r, g, b)) redCount++
+                    if (isStaminaYellow(r, g, b)) yellowCount++
                     total++
                 }
             }
@@ -652,7 +649,7 @@ class OverlayService : Service() {
     }
 
     private fun isStaminaRed(red: Int, green: Int, blue: Int): Boolean =
-        red >= 185 && green <= 145 && blue <= 150 && red - green >= 60 && red - blue >= 55
+        red >= 200 && green <= 130 && blue <= 135 && red - green >= 75 && red - blue >= 70
 
     private fun isStaminaYellow(red: Int, green: Int, blue: Int): Boolean =
         red >= 190 && green >= 130 && blue <= 90 && red - blue >= 100 && green - blue >= 70
@@ -749,13 +746,13 @@ class OverlayService : Service() {
         private const val CHANNEL_ID = "vesna_overlay"
         private const val NOTIFICATION_ID = 4101
         private const val POLL_INTERVAL_MS = 1_500L
-        private const val STAMINA_POLL_INTERVAL_MS = 250L
-        private const val STAMINA_ROI_LEFT = 0.46f
-        private const val STAMINA_ROI_TOP = 0.43f
-        private const val STAMINA_ROI_RIGHT = 0.66f
-        private const val STAMINA_ROI_BOTTOM = 0.67f
+        private const val STAMINA_POLL_INTERVAL_MS = 500L
+        private const val STAMINA_ROI_LEFT = 0.52f
+        private const val STAMINA_ROI_TOP = 0.49f
+        private const val STAMINA_ROI_RIGHT = 0.60f
+        private const val STAMINA_ROI_BOTTOM = 0.64f
         private const val STAMINA_MIN_CLASSIFIED_RATIO = 0.0005f
-        private const val STAMINA_MIN_CLASSIFIED_PIXELS = 24
+        private const val STAMINA_MIN_CLASSIFIED_PIXELS = 6
         private const val EXTRA_MEDIA_PROJECTION_DATA = "media_projection_data"
 
         @Volatile

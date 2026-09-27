@@ -5,7 +5,7 @@ import android.content.Context
 /** A saved special-tuning profile. Profiles are keyed by the game's package name. */
 data class GameSpecialConfig(
     val autoReturnEnabled: Boolean = false,
-    val autoReturnDelayMs: Long = 10_000L,
+    val autoReturnDelayMs: Long = 8_000L,
     val staminaAutoSwitchEnabled: Boolean = false,
     val staminaThresholdPercent: Int = 25,
     val staminaConfirmFrames: Int = 2,
