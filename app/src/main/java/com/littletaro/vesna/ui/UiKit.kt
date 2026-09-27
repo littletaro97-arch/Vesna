@@ -2,6 +2,8 @@ package com.littletaro.vesna.ui
 
 import android.app.Activity
 import android.content.Context
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.View
@@ -109,6 +111,19 @@ fun Context.badgeChip(text: String, textColor: Int, fillColor: Int): View =
         setPadding(dp(10), dp(3), dp(10), dp(3))
     }
 
+/** 深浅色模式下都保持清晰可见的复选框。 */
+fun Context.themedCheckBox(
+    checked: Boolean,
+    clickable: Boolean = false,
+    focusable: Boolean = false,
+): CheckBox = CheckBox(this).apply {
+    val frameColor = if (palette().dark) Color.WHITE else Color.rgb(104, 112, 124)
+    buttonTintList = ColorStateList.valueOf(frameColor)
+    isChecked = checked
+    isClickable = clickable
+    isFocusable = focusable
+}
+
 /** 一张普通信息卡片：圆角 + 描边 + 统一内边距。 */
 fun Context.cardContainer(paddingH: Int = 16, paddingV: Int = 14): LinearLayout =
     LinearLayout(this).apply {
@@ -185,10 +200,7 @@ fun Context.toggleRow(
         LinearLayout.LayoutParams(0, -2, 1f),
     )
     row.addView(
-        CheckBox(this@toggleRow).apply {
-            isChecked = checked
-            isClickable = false
-        },
+        themedCheckBox(checked),
         LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) },
     )
     addView(row, LinearLayout.LayoutParams(-1, -2))

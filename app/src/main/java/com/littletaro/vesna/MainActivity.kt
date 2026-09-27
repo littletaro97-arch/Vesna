@@ -222,7 +222,7 @@ class MainActivity : Activity() {
                 title = "小红书",
                 subtitle = "小红书号：5067916575",
                 extra = "昵称：小芋头不会取名",
-                url = "https://www.xiaohongshu.com/user/profile/5067916575",
+                url = "https://www.xiaohongshu.com/user/profile/63cfb2e10000000027028d15",
             ),
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) },
         )

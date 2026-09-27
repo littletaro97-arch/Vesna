@@ -48,12 +48,12 @@ data class OverlayConfig(
      * 是否开启原神体力条自动切后台。
      *
      * 开启后，[com.littletaro.vesna.overlay.OverlayService] 会通过 MediaProjection 周期性截屏，
-     * 在屏幕底部中央检测绿色体力条；当绿色比例低于阈值时触发切后台。
+     * 在角色附近检测黄色/红色体力条；当红色像素占比达到阈值时触发切后台。
      */
     val staminaAutoSwitchEnabled: Boolean = false,
     /**
-     * 体力条绿色像素占比阈值（百分比）。低于此值视为体力耗尽。
-     * 默认 25：在 1920×884 分辨率下，满体力绿色占比约 40-60%，耗尽时接近 0。
+     * 角色附近可识别体力条颜色像素中红色所占的阈值（百分比）。
+     * 黄色表示正常，红色占比达到此值并通过连续帧确认后视为体力偏低。
      */
     val staminaThresholdPercent: Int = 25,
     /**

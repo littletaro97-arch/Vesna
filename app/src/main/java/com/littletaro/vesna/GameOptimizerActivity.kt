@@ -12,6 +12,7 @@ import android.widget.LinearLayout
 import com.littletaro.vesna.core.OperationLog
 import com.littletaro.vesna.core.OverlayConfig
 import com.littletaro.vesna.core.OverlayPrefs
+import com.littletaro.vesna.core.RuntimeProtection
 import com.littletaro.vesna.overlay.OverlayService
 import com.littletaro.vesna.ui.applyTheme
 import com.littletaro.vesna.ui.badgeChip
@@ -29,8 +30,7 @@ import com.littletaro.vesna.ui.toggleRow
 /**
  * 游戏优化设置页：原神针对性功能。
  *
- * 目前提供「切后台后自动返回」开关与倒计时，后续可扩展体力条自动识别、
- * 自动切后台等高级功能，不破坏主页的简洁性。
+ * 提供「切后台后自动返回」和原神体力条自动切后台实验功能。
  */
 class GameOptimizerActivity : Activity() {
 
@@ -43,6 +43,11 @@ class GameOptimizerActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         applyTheme()
+        renderSafely()
+    }
+
+    override fun onResume() {
+        super.onResume()
         renderSafely()
     }
 
@@ -86,7 +91,7 @@ class GameOptimizerActivity : Activity() {
         root.addView(labelText("游戏优化", 24f, palette().textPrimary))
         root.addView(
             labelText(
-                "针对特定游戏的额外辅助功能。当前版本先提供「自动返回」，后续可扩展自动识别。",
+                "针对原神的额外辅助功能。体力条识别仍处于实验阶段。",
                 12f,
                 palette().textSecondary,
                 top = 6,
@@ -133,9 +138,9 @@ class GameOptimizerActivity : Activity() {
             toggleRow(
                 title = "体力耗尽自动切后台",
                 description = if (config.staminaAutoSwitchEnabled) {
-                    "已开启 —— 每 0.5 秒截屏分析底部中央体力条，绿色比例低于阈值时自动切后台。"
+                    "已开启 —— 每 0.5 秒分析角色附近的黄/红体力条；红色达到阈值并连续确认后切后台。"
                 } else {
-                    "已关闭 —— 需要授予屏幕录制权限，仅在运行悬浮服务时生效。"
+                    "已关闭 —— 需要悬浮窗、无障碍和屏幕捕获授权；仅在原神画面中使用。"
                 },
                 checked = config.staminaAutoSwitchEnabled,
                 onToggle = { toggleStaminaAutoSwitch(config) },
@@ -144,7 +149,7 @@ class GameOptimizerActivity : Activity() {
         )
         root.addView(
             numberSlider(
-                title = "绿色占比阈值",
+                title = "红色像素占比阈值",
                 value = config.staminaThresholdPercent,
                 range = 5..60,
                 label = { "$it%" },
@@ -205,12 +210,32 @@ class GameOptimizerActivity : Activity() {
             return
         }
 
+        val runtimeStatus = RuntimeProtection.inspect(this)
+        if (!runtimeStatus.overlayReady) {
+            AlertDialog.Builder(this)
+                .setTitle("先开启悬浮窗权限")
+                .setMessage("体力耗尽后需要显示悬浮按钮并执行切后台。请先授予悬浮窗权限，再开启实验室功能。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("去开启") { _, _ -> RuntimeProtection.openOverlaySettings(this) }
+                .show()
+            return
+        }
+        if (!runtimeStatus.accessibilityReady) {
+            AlertDialog.Builder(this)
+                .setTitle("先开启无障碍服务")
+                .setMessage("体力耗尽后由无障碍服务执行切后台。请先开启该服务，再申请屏幕捕获授权。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("去开启") { _, _ -> RuntimeProtection.openAccessibilitySettings(this) }
+                .show()
+            return
+        }
+
         // 开启：先二次确认，再请求 MediaProjection 授权。
         AlertDialog.Builder(this)
             .setTitle("实验室功能")
             .setMessage(
-                "「体力条自动切后台」目前还在实验阶段，识别逻辑尚未调优，" +
-                    "可能会出现误触发、漏触发或额外耗电。当前版本主要用于验证效果，不建议日常依赖。\n\n" +
+                    "「体力条自动切后台」目前还在实验阶段，会根据角色附近体力条的黄/红颜色判断。" +
+                    "不同分辨率、画面效果和场景可能导致误触发、漏触发或额外耗电。\n\n" +
                     "确定要继续开启吗？",
             )
             .setPositiveButton("仍要开启") { _, _ ->

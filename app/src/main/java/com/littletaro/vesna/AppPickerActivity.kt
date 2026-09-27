@@ -10,7 +10,6 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.widget.BaseAdapter
-import android.widget.CheckBox
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ListView
@@ -24,6 +23,7 @@ import com.littletaro.vesna.overlay.OverlayService
 import com.littletaro.vesna.ui.dp
 import com.littletaro.vesna.ui.labelText
 import com.littletaro.vesna.ui.palette
+import com.littletaro.vesna.ui.themedCheckBox
 
 /**
  * 挑选「哪些应用里显示悬浮按钮」。
@@ -175,11 +175,9 @@ class AppPickerActivity : Activity() {
             )
 
             row.addView(
-                CheckBox(context).apply {
-                    isChecked = selected.contains(app.packageName)
-                    isClickable = false
-                    isFocusable = false
-                },
+                context.themedCheckBox(
+                    checked = selected.contains(app.packageName),
+                ),
                 LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) },
             )
             return row

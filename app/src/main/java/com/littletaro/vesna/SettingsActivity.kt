@@ -7,7 +7,6 @@ import android.content.res.Configuration
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
-import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.Toast
@@ -30,6 +29,7 @@ import com.littletaro.vesna.ui.screenRoot
 import com.littletaro.vesna.ui.screenScroll
 import com.littletaro.vesna.ui.sectionLabel
 import com.littletaro.vesna.ui.statusRow
+import com.littletaro.vesna.ui.themedCheckBox
 import com.littletaro.vesna.ui.toggleRow
 import com.littletaro.vesna.update.UpdateController
 
@@ -336,10 +336,7 @@ class SettingsActivity : Activity() {
                 LinearLayout.LayoutParams(0, -2, 1f),
             )
             toggleRow.addView(
-                CheckBox(this@SettingsActivity).apply {
-                    isChecked = config.restrictToApps
-                    isClickable = false
-                },
+                themedCheckBox(config.restrictToApps),
                 LinearLayout.LayoutParams(-2, -2).apply { leftMargin = dp(8) },
             )
             addView(toggleRow, LinearLayout.LayoutParams(-1, -2))
@@ -431,10 +428,7 @@ class SettingsActivity : Activity() {
             LinearLayout.LayoutParams(0, -2, 1f),
         )
         autoRow.addView(
-            CheckBox(this@SettingsActivity).apply {
-                isChecked = updateController.updatesEnabled()
-                isClickable = false
-            },
+            themedCheckBox(updateController.updatesEnabled()),
             LinearLayout.LayoutParams(-2, -2),
         )
         addView(autoRow, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })

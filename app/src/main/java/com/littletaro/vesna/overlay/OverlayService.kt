@@ -48,8 +48,8 @@ import kotlin.math.roundToInt
  * 轮询本身不读取任何内容，只问系统「最近进入前台的是哪个包名」。
  *
  * 关于「原神体力条自动切后台」：需要用户在游戏优化页授权 MediaProjection 后，
- * 服务会创建 [ImageReader] + [VirtualDisplay]，每 500ms 截一帧并分析屏幕底部中央
- * 的绿色像素比例；低于阈值时调用 [onButtonTriggered] 自动切后台。
+ * 服务会创建 [ImageReader] + [VirtualDisplay]，每 500ms 分析角色附近的黄/红体力条；
+ * 红色像素比例达到阈值并连续确认后，调用 [onButtonTriggered] 自动切后台。
  */
 class OverlayService : Service() {
 
@@ -72,6 +72,7 @@ class OverlayService : Service() {
 
     // ---------------- MediaProjection 截屏（体力条识别）
     private var mediaProjection: MediaProjection? = null
+    private var mediaProjectionCallback: MediaProjection.Callback? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var staminaConsecutiveLowFrames = 0
@@ -110,6 +111,13 @@ class OverlayService : Service() {
         val projectionIntent = intent
             ?.getParcelableExtraCompat<Intent>(EXTRA_MEDIA_PROJECTION_DATA)
             ?.takeIf { config.staminaAutoSwitchEnabled }
+
+        // START_STICKY 重建服务时不会恢复旧的 MediaProjection 授权；重新授权前保持功能关闭。
+        if (config.staminaAutoSwitchEnabled && projectionIntent == null && mediaProjection == null) {
+            config = config.copy(staminaAutoSwitchEnabled = false)
+            OverlayPrefs.save(this, config)
+            OperationLog.record(this, "屏幕捕获授权未恢复，体力识别保持关闭")
+        }
 
         return try {
             startAsForeground(includeMediaProjection = projectionIntent != null || mediaProjection != null)
@@ -417,42 +425,72 @@ class OverlayService : Service() {
 
     private fun createMediaProjection(data: Intent) {
         releaseMediaProjection()
-        val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjection = manager.getMediaProjection(Activity.RESULT_OK, data)
-        if (mediaProjection == null) {
-            OperationLog.record(this, "MediaProjection 获取失败")
-            return
+        try {
+            val manager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+            val projection = manager.getMediaProjection(Activity.RESULT_OK, data)
+                ?: throw IllegalStateException("MediaProjection 获取失败")
+            mediaProjection = projection
+
+            val callback = object : MediaProjection.Callback() {
+                override fun onStop() {
+                    if (mediaProjection !== projection) return
+                    releaseMediaProjection(stopProjection = false)
+                    config = OverlayPrefs.load(this@OverlayService)
+                        .copy(staminaAutoSwitchEnabled = false)
+                    OverlayPrefs.save(this@OverlayService, config)
+                    updateProjectionForegroundType(false)
+                    OperationLog.record(this@OverlayService, "屏幕捕获已停止，体力识别已关闭")
+                }
+            }
+            mediaProjectionCallback = callback
+            // Android 14+ 要求在创建 VirtualDisplay 前注册停止回调。
+            projection.registerCallback(callback, handler)
+
+            val metrics = resources.displayMetrics
+            val width = metrics.widthPixels
+            val height = metrics.heightPixels
+            val density = metrics.densityDpi
+
+            val reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+            imageReader = reader
+            virtualDisplay = projection.createVirtualDisplay(
+                "VesnaStamina",
+                width, height, density,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                reader.surface, null, handler,
+            ) ?: throw IllegalStateException("VirtualDisplay 创建失败")
+
+            OperationLog.record(this, "MediaProjection 已启动，开始识别原神体力条")
+            staminaConsecutiveLowFrames = 0
+            handler.removeCallbacks(staminaAnalyzer)
+            handler.post(staminaAnalyzer)
+        } catch (error: Exception) {
+            releaseMediaProjection()
+            config = OverlayPrefs.load(this).copy(staminaAutoSwitchEnabled = false)
+            OverlayPrefs.save(this, config)
+            updateProjectionForegroundType(false)
+            OperationLog.record(
+                this,
+                "屏幕捕获启动失败，体力识别已关闭",
+                error.javaClass.simpleName,
+            )
         }
-
-        val metrics = resources.displayMetrics
-        val width = metrics.widthPixels
-        val height = metrics.heightPixels
-        val density = metrics.densityDpi
-
-        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        val surface = imageReader?.surface ?: return
-
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "VesnaStamina",
-            width, height, density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            surface, null, handler,
-        )
-
-        OperationLog.record(this, "MediaProjection 已启动，开始体力条检测")
-        staminaConsecutiveLowFrames = 0
-        handler.removeCallbacks(staminaAnalyzer)
-        handler.post(staminaAnalyzer)
     }
 
-    private fun releaseMediaProjection() {
+    private fun releaseMediaProjection(stopProjection: Boolean = true) {
         handler.removeCallbacks(staminaAnalyzer)
+        val projection = mediaProjection
+        val callback = mediaProjectionCallback
+        mediaProjection = null
+        mediaProjectionCallback = null
         virtualDisplay?.release()
         virtualDisplay = null
         imageReader?.close()
         imageReader = null
-        mediaProjection?.stop()
-        mediaProjection = null
+        if (projection != null) {
+            if (callback != null) runCatching { projection.unregisterCallback(callback) }
+            if (stopProjection) runCatching { projection.stop() }
+        }
         staminaConsecutiveLowFrames = 0
     }
 
@@ -467,6 +505,7 @@ class OverlayService : Service() {
         if (config.restrictToApps && config.targetPackages.isNotEmpty() &&
             (foreground == null || !config.targetPackages.contains(foreground))
         ) {
+            staminaConsecutiveLowFrames = 0
             scheduleNextStaminaAnalysis()
             return
         }
@@ -481,12 +520,13 @@ class OverlayService : Service() {
         val width = image.width
         val height = image.height
 
-        val roiLeft = (width * 0.35f).roundToInt().coerceIn(0, width)
-        val roiTop = (height * 0.87f).roundToInt().coerceIn(0, height)
-        val roiRight = (width * 0.65f).roundToInt().coerceIn(roiLeft, width)
-        val roiBottom = (height * 0.93f).roundToInt().coerceIn(roiTop, height)
+        val roiLeft = (width * STAMINA_ROI_LEFT).roundToInt().coerceIn(0, width)
+        val roiTop = (height * STAMINA_ROI_TOP).roundToInt().coerceIn(0, height)
+        val roiRight = (width * STAMINA_ROI_RIGHT).roundToInt().coerceIn(roiLeft, width)
+        val roiBottom = (height * STAMINA_ROI_BOTTOM).roundToInt().coerceIn(roiTop, height)
 
-        var greenCount = 0
+        var redCount = 0
+        var yellowCount = 0
         var total = 0
 
         val planes = image.planes
@@ -494,31 +534,39 @@ class OverlayService : Service() {
         val pixelStride = planes[0].pixelStride
         val rowStride = planes[0].rowStride
 
-        for (y in roiTop until roiBottom) {
-            val rowStart = y * rowStride + roiLeft * pixelStride
-            if (rowStart < 0 || rowStart >= buffer.capacity()) continue
-            buffer.position(rowStart)
-            for (x in roiLeft until roiRight) {
-                if (buffer.remaining() < 4) break
-                val r = buffer.get().toInt() and 0xFF
-                val g = buffer.get().toInt() and 0xFF
-                val b = buffer.get().toInt() and 0xFF
-                buffer.get() // alpha
-                if (g > 120 && g > r + 20 && g > b + 20) greenCount++
-                total++
+        try {
+            for (y in roiTop until roiBottom) {
+                val rowStart = y * rowStride + roiLeft * pixelStride
+                if (rowStart < 0 || rowStart >= buffer.capacity()) continue
+                buffer.position(rowStart)
+                for (x in roiLeft until roiRight) {
+                    if (buffer.remaining() < 4) break
+                    val r = buffer.get().toInt() and 0xFF
+                    val g = buffer.get().toInt() and 0xFF
+                    val b = buffer.get().toInt() and 0xFF
+                    buffer.get() // alpha
+                    if (isStaminaRed(r, g, b)) redCount++
+                    if (isStaminaYellow(r, g, b)) yellowCount++
+                    total++
+                }
             }
+        } finally {
+            image.close()
         }
-        image.close()
 
-        val percent = if (total > 0) greenCount * 100 / total else 0
+        val classifiedPixels = redCount + yellowCount
+        val minClassifiedPixels = (total * STAMINA_MIN_CLASSIFIED_RATIO)
+            .roundToInt()
+            .coerceAtLeast(STAMINA_MIN_CLASSIFIED_PIXELS)
+        val redPercent = if (classifiedPixels > 0) redCount * 100 / classifiedPixels else 0
         val threshold = config.staminaThresholdPercent.coerceIn(5, 80)
 
-        if (percent < threshold) {
+        if (classifiedPixels >= minClassifiedPixels && redPercent >= threshold) {
             staminaConsecutiveLowFrames++
             if (staminaConsecutiveLowFrames >= config.staminaConfirmFrames.coerceAtLeast(1)) {
                 OperationLog.record(
                     this,
-                    "体力条耗尽（绿色$percent% < 阈值$threshold%），自动切后台",
+                    "检测到红色体力条（红色占比$redPercent% ≥ 阈值$threshold%），自动切后台",
                     foreground ?: "",
                 )
                 staminaConsecutiveLowFrames = 0
@@ -526,7 +574,7 @@ class OverlayService : Service() {
             } else {
                 OperationLog.record(
                     this,
-                    "体力条偏低（绿色$percent% < 阈值$threshold%），累计 $staminaConsecutiveLowFrames 帧",
+                    "检测到红色体力条（红色占比$redPercent% ≥ 阈值$threshold%），累计 $staminaConsecutiveLowFrames 帧",
                 )
             }
         } else {
@@ -540,6 +588,19 @@ class OverlayService : Service() {
         if (config.staminaAutoSwitchEnabled && imageReader != null) {
             handler.postDelayed(staminaAnalyzer, STAMINA_POLL_INTERVAL_MS)
         }
+    }
+
+    private fun isStaminaRed(red: Int, green: Int, blue: Int): Boolean =
+        red >= 200 && green <= 130 && blue <= 135 && red - green >= 75 && red - blue >= 70
+
+    private fun isStaminaYellow(red: Int, green: Int, blue: Int): Boolean =
+        red >= 190 && green >= 130 && blue <= 90 && red - blue >= 100 && green - blue >= 70
+
+    private fun updateProjectionForegroundType(includeMediaProjection: Boolean) {
+        runCatching { startAsForeground(includeMediaProjection) }
+            .onFailure {
+                OperationLog.record(this, "更新前台服务类型失败", it.javaClass.simpleName)
+            }
     }
 
     // ---------------------------------------------------------------- 前台服务
@@ -615,6 +676,12 @@ class OverlayService : Service() {
         private const val NOTIFICATION_ID = 4101
         private const val POLL_INTERVAL_MS = 1_500L
         private const val STAMINA_POLL_INTERVAL_MS = 500L
+        private const val STAMINA_ROI_LEFT = 0.52f
+        private const val STAMINA_ROI_TOP = 0.49f
+        private const val STAMINA_ROI_RIGHT = 0.60f
+        private const val STAMINA_ROI_BOTTOM = 0.64f
+        private const val STAMINA_MIN_CLASSIFIED_RATIO = 0.0005f
+        private const val STAMINA_MIN_CLASSIFIED_PIXELS = 6
         private const val EXTRA_MEDIA_PROJECTION_DATA = "media_projection_data"
 
         @Volatile
@@ -672,6 +739,7 @@ class OverlayService : Service() {
                 // 用户关闭体力条自动切后台时，立刻释放 MediaProjection。
                 if (hadStamina && !service.config.staminaAutoSwitchEnabled) {
                     service.releaseMediaProjection()
+                    service.updateProjectionForegroundType(false)
                     OperationLog.record(service, "已关闭体力条自动切后台，释放 MediaProjection")
                 }
             }
