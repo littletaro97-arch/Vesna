@@ -200,7 +200,7 @@ class GameOptimizerActivity : Activity() {
                 title = "连续确认帧数",
                 value = config.staminaConfirmFrames,
                 range = 1..5,
-                label = { "$it 帧（≈ ${it * 0.25} 秒）" },
+                label = { "$it 帧（≈ ${it * 0.5} 秒）" },
                 onChanged = { value -> saveConfig { it.copy(staminaConfirmFrames = value) } },
             ),
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10) },

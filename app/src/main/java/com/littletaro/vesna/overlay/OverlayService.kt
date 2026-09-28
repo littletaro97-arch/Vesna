@@ -50,8 +50,8 @@ import kotlin.math.roundToInt
  * 轮询本身不读取任何内容，只问系统「最近进入前台的是哪个包名」。
  *
  * 关于「原神体力条自动切后台」：需要用户在游戏优化页授权 MediaProjection 后，
- * 服务会创建 [ImageReader] + [VirtualDisplay]，每 250ms 在角色附近的多个相邻窗口分析黄/红体力条；
- * 任一局部窗口的红色像素比例达到阈值并连续确认后，调用 [onButtonTriggered] 自动切后台。
+ * 服务会创建 [ImageReader] + [VirtualDisplay]，每 500ms 分析角色附近的黄/红体力条；
+ * 红色像素比例达到阈值并连续确认后，调用 [onButtonTriggered] 自动切后台。
  */
 class OverlayService : Service() {
 
@@ -557,16 +557,14 @@ class OverlayService : Service() {
         val width = image.width
         val height = image.height
 
-        val searchLeft = (width * STAMINA_SEARCH_LEFT).roundToInt().coerceIn(0, width)
-        val searchTop = (height * STAMINA_SEARCH_TOP).roundToInt().coerceIn(0, height)
-        val searchRight = (width * STAMINA_SEARCH_RIGHT).roundToInt().coerceIn(searchLeft, width)
-        val searchBottom = (height * STAMINA_SEARCH_BOTTOM).roundToInt().coerceIn(searchTop, height)
-        val searchWidth = searchRight - searchLeft
-        val searchHeight = searchBottom - searchTop
-        val tileCount = STAMINA_GRID_COLUMNS * STAMINA_GRID_ROWS
-        val redByTile = IntArray(tileCount)
-        val yellowByTile = IntArray(tileCount)
-        val pixelsByTile = IntArray(tileCount)
+        val roiLeft = (width * STAMINA_ROI_LEFT).roundToInt().coerceIn(0, width)
+        val roiTop = (height * STAMINA_ROI_TOP).roundToInt().coerceIn(0, height)
+        val roiRight = (width * STAMINA_ROI_RIGHT).roundToInt().coerceIn(roiLeft, width)
+        val roiBottom = (height * STAMINA_ROI_BOTTOM).roundToInt().coerceIn(roiTop, height)
+
+        var redCount = 0
+        var yellowCount = 0
+        var total = 0
 
         val planes = image.planes
         val buffer = planes[0].buffer
@@ -574,79 +572,35 @@ class OverlayService : Service() {
         val rowStride = planes[0].rowStride
 
         try {
-            // 一次扫描较宽的中央区域，但分别统计小网格；后续按重叠窗口计算占比，
-            // 这样能容忍体力条位置偏移，同时不会让整个搜索区域的背景颜色稀释条形信号。
-            for (tileY in 0 until STAMINA_GRID_ROWS) {
-                val tileTop = searchTop + searchHeight * tileY / STAMINA_GRID_ROWS
-                val tileBottom = searchTop + searchHeight * (tileY + 1) / STAMINA_GRID_ROWS
-                for (tileX in 0 until STAMINA_GRID_COLUMNS) {
-                    val tileLeft = searchLeft + searchWidth * tileX / STAMINA_GRID_COLUMNS
-                    val tileRight = searchLeft + searchWidth * (tileX + 1) / STAMINA_GRID_COLUMNS
-                    val tileIndex = tileY * STAMINA_GRID_COLUMNS + tileX
-                    var tilePixels = 0
-
-                    for (y in tileTop until tileBottom) {
-                        val rowStart = y * rowStride + tileLeft * pixelStride
-                        if (rowStart < 0 || rowStart >= buffer.capacity()) continue
-                        buffer.position(rowStart)
-                        for (x in tileLeft until tileRight) {
-                            if (buffer.remaining() < 4) break
-                            val r = buffer.get().toInt() and 0xFF
-                            val g = buffer.get().toInt() and 0xFF
-                            val b = buffer.get().toInt() and 0xFF
-                            buffer.get() // alpha
-                            if (isStaminaRed(r, g, b)) redByTile[tileIndex]++
-                            if (isStaminaYellow(r, g, b)) yellowByTile[tileIndex]++
-                            tilePixels++
-                        }
-                    }
-                    pixelsByTile[tileIndex] = tilePixels
+            for (y in roiTop until roiBottom) {
+                val rowStart = y * rowStride + roiLeft * pixelStride
+                if (rowStart < 0 || rowStart >= buffer.capacity()) continue
+                buffer.position(rowStart)
+                for (x in roiLeft until roiRight) {
+                    if (buffer.remaining() < 4) break
+                    val r = buffer.get().toInt() and 0xFF
+                    val g = buffer.get().toInt() and 0xFF
+                    val b = buffer.get().toInt() and 0xFF
+                    buffer.get() // alpha
+                    if (isStaminaRed(r, g, b)) redCount++
+                    if (isStaminaYellow(r, g, b)) yellowCount++
+                    total++
                 }
             }
         } finally {
             image.close()
         }
 
+        val classifiedPixels = redCount + yellowCount
+        val minClassifiedPixels = (total * STAMINA_MIN_CLASSIFIED_RATIO)
+            .roundToInt()
+            .coerceAtLeast(STAMINA_MIN_CLASSIFIED_PIXELS)
+        val redPercent = if (classifiedPixels > 0) redCount * 100 / classifiedPixels else 0
         val threshold = config.staminaThresholdPercent.coerceIn(5, 80)
         val confirmFrames = config.staminaConfirmFrames.coerceAtLeast(1)
-        var lowDetected = false
-        var redPercent = 0
-        var hasNormalYellow = false
+        val hasNormalYellow = yellowCount >= minClassifiedPixels && redPercent < threshold
 
-        for (windowY in 0..(STAMINA_GRID_ROWS - STAMINA_WINDOW_ROWS)) {
-            for (windowX in 0..(STAMINA_GRID_COLUMNS - STAMINA_WINDOW_COLUMNS)) {
-                var windowRed = 0
-                var windowYellow = 0
-                var windowPixels = 0
-                for (tileY in windowY until windowY + STAMINA_WINDOW_ROWS) {
-                    for (tileX in windowX until windowX + STAMINA_WINDOW_COLUMNS) {
-                        val tileIndex = tileY * STAMINA_GRID_COLUMNS + tileX
-                        windowRed += redByTile[tileIndex]
-                        windowYellow += yellowByTile[tileIndex]
-                        windowPixels += pixelsByTile[tileIndex]
-                    }
-                }
-
-                val classifiedPixels = windowRed + windowYellow
-                val minClassifiedPixels = (windowPixels * STAMINA_MIN_CLASSIFIED_RATIO)
-                    .roundToInt()
-                    .coerceAtLeast(STAMINA_MIN_CLASSIFIED_PIXELS)
-                if (classifiedPixels < minClassifiedPixels) continue
-
-                val windowRedPercent = windowRed * 100 / classifiedPixels
-                if (windowRedPercent >= threshold) {
-                    if (!lowDetected || windowRedPercent > redPercent) {
-                        redPercent = windowRedPercent
-                    }
-                    lowDetected = true
-                } else if (windowYellow >= minClassifiedPixels) {
-                    hasNormalYellow = true
-                }
-            }
-        }
-
-        // 任一重叠局部窗口命中低体力颜色即可进入多帧确认；局部统计保留了小信号强度。
-        if (lowDetected) {
+        if (classifiedPixels >= minClassifiedPixels && redPercent >= threshold) {
             staminaConsecutiveNormalFrames = 0
             if (!staminaLowTriggered) {
                 staminaConsecutiveLowFrames++
@@ -695,7 +649,7 @@ class OverlayService : Service() {
     }
 
     private fun isStaminaRed(red: Int, green: Int, blue: Int): Boolean =
-        red >= 175 && green <= 135 && blue <= 155 && red - green >= 45 && red - blue >= 40
+        red >= 200 && green <= 130 && blue <= 135 && red - green >= 75 && red - blue >= 70
 
     private fun isStaminaYellow(red: Int, green: Int, blue: Int): Boolean =
         red >= 190 && green >= 130 && blue <= 90 && red - blue >= 100 && green - blue >= 70
@@ -792,15 +746,11 @@ class OverlayService : Service() {
         private const val CHANNEL_ID = "vesna_overlay"
         private const val NOTIFICATION_ID = 4101
         private const val POLL_INTERVAL_MS = 1_500L
-        private const val STAMINA_POLL_INTERVAL_MS = 250L
-        private const val STAMINA_SEARCH_LEFT = 0.44f
-        private const val STAMINA_SEARCH_TOP = 0.43f
-        private const val STAMINA_SEARCH_RIGHT = 0.66f
-        private const val STAMINA_SEARCH_BOTTOM = 0.68f
-        private const val STAMINA_GRID_COLUMNS = 5
-        private const val STAMINA_GRID_ROWS = 4
-        private const val STAMINA_WINDOW_COLUMNS = 2
-        private const val STAMINA_WINDOW_ROWS = 2
+        private const val STAMINA_POLL_INTERVAL_MS = 500L
+        private const val STAMINA_ROI_LEFT = 0.52f
+        private const val STAMINA_ROI_TOP = 0.49f
+        private const val STAMINA_ROI_RIGHT = 0.60f
+        private const val STAMINA_ROI_BOTTOM = 0.64f
         private const val STAMINA_MIN_CLASSIFIED_RATIO = 0.0005f
         private const val STAMINA_MIN_CLASSIFIED_PIXELS = 6
         private const val EXTRA_MEDIA_PROJECTION_DATA = "media_projection_data"
