@@ -3,9 +3,9 @@ param(
     [switch]$InitializeSigning,
     [switch]$ShowSigningPassword,
     [ValidatePattern('^\d+\.\d+(?:\.\d+)?$')]
-    [string]$VersionName = '1.5.4',
+    [string]$VersionName = '1.5.5',
     [ValidateRange(1, 2147483647)]
-    [int]$VersionCode = 10
+    [int]$VersionCode = 11
 )
 
 $ErrorActionPreference = 'Stop'

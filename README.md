@@ -2,7 +2,7 @@
 
 一个 Android 游戏辅助小工具：**在游戏画面上常驻一个悬浮按钮，点一下把当前游戏切到后台**，直接回到最近任务界面。
 
-当前版本：**v1.5.4**（versionCode 10）
+当前版本：**v1.5.5**（versionCode 11）
 
 ## 它怎么做到的（以及为什么不需要 root / Shizuku）
 
@@ -151,7 +151,7 @@ Windows 上构建已签名 Release APK：
 .\tools\build-release.ps1 -InitializeSigning
 
 # 后续版本：版本号和 versionCode 必须与 app/build.gradle.kts 一致
-.\tools\build-release.ps1 -VersionName 1.5.4 -VersionCode 10
+.\tools\build-release.ps1 -VersionName 1.5.5 -VersionCode 11
 ```
 
 首发签名文件保存在 `%APPDATA%\Vesna\vesna-release.p12`，口令由当前 Windows 用户的 DPAPI 加密保存在同目录。签名文件和口令是未来 APK 原位升级所必需的，必须妥善备份；不要将它们提交到 GitHub。需要备份口令时，可在原 Windows 账户下运行 `.\tools\build-release.ps1 -ShowSigningPassword`，并把口令存入自己的密码管理器。Release APK 输出到 `dist\vesna-v<版本号>-release.apk`。
@@ -215,7 +215,7 @@ vesna-v<版本号>-release.apk
 
 ## 版本历史
 
-- **未发布跟进（v1.5.4 之后）**：加深浅色模式复选框的可见度；更新小红书主页链接；改进实验室触发与返回倒计时；增加按游戏保存且互斥生效的特调方案和主页运行状态。该跟进尚未构建 Release。
+- **v1.5.5**（2026-09-28，versionCode 11）：提升浅色模式复选框辨识度并更新小红书主页链接；修正自动切后台进入最近任务界面的行为；新增按游戏保存、互斥生效的特调方案和主页运行状态；实验室触发时显示倒计时并沿用自动返回设置；新建特调方案默认建议 10 秒自动返回。体力识别调整为每 250ms 检测，并扩大中央搜索区域、放宽红色识别边界以适应角色移动。体力识别仍是默认关闭的实验功能，尚未完成多机型实测。
 - **v1.5.4**（2026-09-26，versionCode 10）：主页新增原神快捷启动和小红书、bilibili 反馈卡片；修正反馈入口在社交 App 已安装时只打开 App 首页的问题，现在通过 Android 链接处理打开相应个人主页。游戏特调入口并入主页。
 - **v1.5.2**（2026-09-26，versionCode 8）：首个公开 Release。修复 Android 14+ 未启用屏幕录制时仍申请 MediaProjection 前台服务类型的问题；把 MediaProjection 初始化移到前台服务启动之后；首帧暂不可用时继续体力识别轮询；关闭 Android 云备份与设备迁移的数据提取。更新项目说明与隐私描述。
 - **v1.4.0–v1.5.1**：工作区中留有这些版本的 Debug APK，但没有 Git 历史或逐版变更记录，因此不推测各版差异。
